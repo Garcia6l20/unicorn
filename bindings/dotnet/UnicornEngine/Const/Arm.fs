@@ -188,7 +188,9 @@ module Arm =
     let UC_ARM_REG_XPSR_NZCVQG = 138
     let UC_ARM_REG_CP_REG = 139
     let UC_ARM_REG_ESR = 140
-    let UC_ARM_REG_ENDING = 141
+    let UC_ARM_REG_MSPLIM = 141
+    let UC_ARM_REG_PSPLIM = 142
+    let UC_ARM_REG_ENDING = 143
 
     // alias registers
     let UC_ARM_REG_R13 = 12

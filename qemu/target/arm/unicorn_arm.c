@@ -237,6 +237,11 @@ static uc_err write_cp_reg(CPUARMState *env, uc_arm_cp_reg *cp)
     return UC_ERR_OK;
 }
 
+static bool arm_v8m_has_stack_limits(CPUARMState *env)
+{
+    return arm_feature(env, ARM_FEATURE_M) && arm_feature(env, ARM_FEATURE_V8);
+}
+
 DEFAULT_VISIBILITY
 uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
                 size_t *size)
@@ -384,6 +389,20 @@ uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
         case UC_ARM_REG_ESR:
             CHECK_REG_TYPE(uint32_t);
             *(uint32_t *)value = env->exception.syndrome;
+            break;
+        case UC_ARM_REG_MSPLIM:
+            if (!arm_v8m_has_stack_limits(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            *(uint32_t *)value = env->v7m.msplim[env->v7m.secure];
+            break;
+        case UC_ARM_REG_PSPLIM:
+            if (!arm_v8m_has_stack_limits(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            *(uint32_t *)value = env->v7m.psplim[env->v7m.secure];
             break;
         }
     }
@@ -592,6 +611,20 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
         case UC_ARM_REG_ESR:
             CHECK_REG_TYPE(uint32_t);
             env->exception.syndrome = *(uint32_t *)value;
+            break;
+        case UC_ARM_REG_MSPLIM:
+            if (!arm_v8m_has_stack_limits(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            env->v7m.msplim[env->v7m.secure] = *(uint32_t *)value & ~7;
+            break;
+        case UC_ARM_REG_PSPLIM:
+            if (!arm_v8m_has_stack_limits(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            env->v7m.psplim[env->v7m.secure] = *(uint32_t *)value & ~7;
             break;
         }
     }
