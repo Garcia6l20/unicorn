@@ -1165,6 +1165,73 @@ static void test_arm_hook_insn_wfi(void)
     OK(uc_close(uc));
 }
 
+typedef struct _STKOF_HOOK_RESULT {
+    int intno;
+    uint32_t sp;
+} STKOF_HOOK_RESULT;
+
+static void test_arm_v8m_stack_limit_intr(uc_engine *uc, int intno,
+                                          void *user_data)
+{
+    STKOF_HOOK_RESULT *result = user_data;
+
+    result->intno = intno;
+    OK(uc_reg_read(uc, UC_ARM_REG_SP, &result->sp));
+    OK(uc_emu_stop(uc));
+}
+
+static void test_arm_v8m_stack_limit_regs(void)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    char code[] = "\x82\xb0"; // sub sp, #8
+    const int excp_stkof = 19;
+    uint32_t r_msplim, r_psplim, r_sp;
+    STKOF_HOOK_RESULT result = {-1, 0};
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB, code, sizeof(code) - 1,
+                    UC_CPU_ARM_CORTEX_M33);
+
+    r_msplim = 0x7007;
+    OK(uc_reg_write(uc, UC_ARM_REG_MSPLIM, &r_msplim));
+    r_psplim = 0x5fff;
+    OK(uc_reg_write(uc, UC_ARM_REG_PSPLIM, &r_psplim));
+
+    OK(uc_reg_read(uc, UC_ARM_REG_MSPLIM, &r_msplim));
+    OK(uc_reg_read(uc, UC_ARM_REG_PSPLIM, &r_psplim));
+    TEST_CHECK(r_msplim == 0x7000);
+    TEST_CHECK(r_psplim == 0x5ff8);
+
+    r_sp = 0x7010;
+    OK(uc_reg_write(uc, UC_ARM_REG_SP, &r_sp));
+    OK(uc_hook_add(uc, &hook, UC_HOOK_INTR, test_arm_v8m_stack_limit_intr,
+                   &result, 1, 0));
+    OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(code) - 1, 0, 0));
+    OK(uc_reg_read(uc, UC_ARM_REG_SP, &r_sp));
+    TEST_CHECK(result.intno == -1);
+    TEST_CHECK(r_sp == 0x7008);
+
+    r_sp = 0x7004;
+    OK(uc_reg_write(uc, UC_ARM_REG_SP, &r_sp));
+    OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(code) - 1, 0, 0));
+    TEST_CHECK(result.intno == excp_stkof);
+    TEST_CHECK(result.sp == 0x7004);
+
+    OK(uc_hook_del(uc, hook));
+    OK(uc_close(uc));
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB, code, sizeof(code) - 1,
+                    UC_CPU_ARM_CORTEX_M7);
+    uc_assert_err(UC_ERR_ARG, uc_reg_read(uc, UC_ARM_REG_MSPLIM, &r_msplim));
+    uc_assert_err(UC_ERR_ARG, uc_reg_write(uc, UC_ARM_REG_PSPLIM, &r_psplim));
+    OK(uc_close(uc));
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_ARM, code, sizeof(code) - 1,
+                    UC_CPU_ARM_CORTEX_A15);
+    uc_assert_err(UC_ERR_ARG, uc_reg_read(uc, UC_ARM_REG_MSPLIM, &r_msplim));
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
@@ -1199,4 +1266,5 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_v7_lpae", test_arm_v7_lpae},
              {"test_arm_svc_hvc_syndrome", test_arm_svc_hvc_syndrome},
              {"test_arm_hook_insn_wfi", test_arm_hook_insn_wfi},
+             {"test_arm_v8m_stack_limit_regs", test_arm_v8m_stack_limit_regs},
              {NULL, NULL}};
