@@ -3154,6 +3154,15 @@ uc_err uc_ctl(uc_engine *uc, uc_control_type control, ...)
         break;
     }
 
+    case UC_CTL_UC_DROP_STORE: {
+        if (rw == UC_CTL_IO_WRITE) {
+            uc->drop_store = true;
+        } else {
+            err = UC_ERR_ARG;
+        }
+        break;
+    }
+
     default:
         err = UC_ERR_ARG;
         break;

@@ -155,6 +155,7 @@ pub const unicornConst = enum(c_int) {
 	CTL_PAUTH_AUTH = 17,
 	CTL_INVALID_ADDR = 18,
 	CTL_UC_PREALLOC = 19,
+	CTL_UC_DROP_STORE = 20,
 	CTL_CONTEXT_CPU = 1,
 	CTL_CONTEXT_MEMORY = 2,
 

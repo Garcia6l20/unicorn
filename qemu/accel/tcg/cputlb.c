@@ -2307,6 +2307,7 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
     if (mr != NULL && !(mr->perms & UC_PROT_WRITE)) {  //non-writable
         // printf("not writable memory???\n");
         handled = false;
+        uc->drop_store = false;
         HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE_PROT) {
             if (hook->to_delete)
                 continue;
@@ -2317,6 +2318,7 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
                                    ((uc_cb_eventmem_t)hook->callback)(uc, UC_MEM_WRITE_PROT, paddr, size, val, hook->user_data));
             if (handled)
                 break;
+            uc->drop_store = false;
 
             // the last callback may already asked to stop emulation
             if (uc->stop_request)
@@ -2324,6 +2326,12 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
         }
 
         if (handled) {
+            if (uc->drop_store) {
+                uc->drop_store = false;
+                uc->invalid_error = UC_ERR_OK;
+                tlb_hook_state_restore(env, &hook_state);
+                return;
+            }
             /* If the TLB entry is for a different page, reload and try again.  */
             if (!tlb_hit(env->uc, tlb_addr, addr)) {
                 if (!victim_tlb_hit(env, mmu_idx, index, tlb_off,
