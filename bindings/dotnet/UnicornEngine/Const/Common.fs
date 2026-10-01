@@ -160,6 +160,7 @@ module Common =
     let UC_CTL_PAUTH_AUTH = 17
     let UC_CTL_INVALID_ADDR = 18
     let UC_CTL_UC_PREALLOC = 19
+    let UC_CTL_UC_DROP_STORE = 20
     let UC_CTL_CONTEXT_CPU = 1
     let UC_CTL_CONTEXT_MEMORY = 2
 

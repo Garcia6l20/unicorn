@@ -662,6 +662,13 @@ typedef enum uc_control_type {
     // compiled out (where preallocation cannot be disabled).
     // Write: @args = (int)
     UC_CTL_UC_PREALLOC,
+    // Discard the store that triggered the current UC_HOOK_MEM_WRITE_PROT
+    // callback. Only valid from inside that callback, which must then return
+    // true: memory is left unchanged and emulation continues with the next
+    // instruction. UC_HOOK_MEM_WRITE callbacks have already run for that
+    // store. A callback returning false cancels the request.
+    // Write: @args = ()
+    UC_CTL_UC_DROP_STORE,
 } uc_control_type;
 
 /*
@@ -755,6 +762,7 @@ See sample_ctl.c for a detailed example.
     uc_ctl(uc, UC_CTL_READ(UC_CTL_INVALID_ADDR, 1), (addr))
 #define uc_ctl_prealloc(uc, prealloc)                                          \
     uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_PREALLOC, 1), (prealloc))
+#define uc_ctl_drop_store(uc) uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_DROP_STORE, 0))
 
 // Opaque storage for CPU context, used with uc_context_*()
 struct uc_context;

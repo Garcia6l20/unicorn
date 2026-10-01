@@ -681,6 +681,149 @@ static void test_tlbdirty_exec(void)
     OK(uc_close(uc));
 }
 
+typedef struct {
+    int calls;
+    bool drop;
+    bool handled;
+} write_prot_hook_state;
+
+static bool test_write_prot_hook(uc_engine *uc, uc_mem_type type,
+                                 uint64_t address, int size, int64_t value,
+                                 void *user_data)
+{
+    write_prot_hook_state *state = (write_prot_hook_state *)user_data;
+
+    TEST_CHECK(type == UC_MEM_WRITE_PROT);
+    TEST_CHECK(address == 0x1800 + 4 * state->calls);
+    TEST_CHECK(size == 4);
+    TEST_CHECK(value == 0x11223344);
+    state->calls++;
+    if (state->drop) {
+        OK(uc_ctl_drop_store(uc));
+    }
+    return state->handled;
+}
+
+static const char write_prot_code[] =
+    "\xb8\x44\x33\x22\x11"
+    "\xa3\x00\x18\x00\x00\x00\x00\x00\x00"
+    "\xa3\x04\x18\x00\x00\x00\x00\x00\x00"
+    "\xbb\x01\x00\x00\x00";
+
+static const uint8_t write_prot_fill[8] = {0xaa, 0xaa, 0xaa, 0xaa,
+                                           0xaa, 0xaa, 0xaa, 0xaa};
+
+static const uint8_t write_prot_stored[8] = {0x44, 0x33, 0x22, 0x11,
+                                             0x44, 0x33, 0x22, 0x11};
+
+static uc_engine *open_write_prot_engine(uint8_t *backing)
+{
+    uc_engine *uc;
+
+    memcpy(backing, write_prot_code, sizeof(write_prot_code) - 1);
+    memcpy(backing + 0x800, write_prot_fill, sizeof(write_prot_fill));
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map_ptr(uc, 0x1000, 0x1000, UC_PROT_READ | UC_PROT_EXEC,
+                      backing));
+    return uc;
+}
+
+static void run_write_prot_engine(uc_engine *uc, uc_err expected_err,
+                                  uint8_t mem[8], uint64_t *r_rbx)
+{
+    *r_rbx = 0;
+    OK(uc_reg_write(uc, UC_X86_REG_RBX, r_rbx));
+    uc_assert_err(expected_err,
+                  uc_emu_start(uc, 0x1000,
+                               0x1000 + sizeof(write_prot_code) - 1, 0, 0));
+    OK(uc_reg_read(uc, UC_X86_REG_RBX, r_rbx));
+    OK(uc_mem_read(uc, 0x1800, mem, 8));
+}
+
+static void run_write_prot_store(write_prot_hook_state *state,
+                                 uc_err expected_err, uint8_t mem[8],
+                                 uint64_t *r_rbx)
+{
+    uint8_t *backing = calloc(1, 0x1000);
+    uc_engine *uc = open_write_prot_engine(backing);
+    uc_hook hook;
+
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_WRITE_PROT, test_write_prot_hook,
+                   state, 1, 0));
+    run_write_prot_engine(uc, expected_err, mem, r_rbx);
+    OK(uc_close(uc));
+    free(backing);
+}
+
+static void test_mem_write_prot_drop_store(void)
+{
+    write_prot_hook_state state = {0, true, true};
+    uint8_t mem[8];
+    uint64_t r_rbx;
+
+    run_write_prot_store(&state, UC_ERR_OK, mem, &r_rbx);
+    TEST_CHECK(state.calls == 2);
+    TEST_CHECK(memcmp(mem, write_prot_fill, sizeof(mem)) == 0);
+    TEST_CHECK(r_rbx == 1);
+
+    state = (write_prot_hook_state){0, true, false};
+    run_write_prot_store(&state, UC_ERR_WRITE_PROT, mem, &r_rbx);
+    TEST_CHECK(state.calls == 1);
+    TEST_CHECK(memcmp(mem, write_prot_fill, sizeof(mem)) == 0);
+    TEST_CHECK(r_rbx == 0);
+}
+
+static void test_mem_write_prot_handled_commits(void)
+{
+    write_prot_hook_state state = {0, false, true};
+    uint8_t mem[8];
+    uint64_t r_rbx;
+
+    run_write_prot_store(&state, UC_ERR_OK, mem, &r_rbx);
+    TEST_CHECK(state.calls == 2);
+    TEST_CHECK(memcmp(mem, write_prot_stored, sizeof(mem)) == 0);
+    TEST_CHECK(r_rbx == 1);
+}
+
+static void test_mem_write_prot_drop_store_scope(void)
+{
+    write_prot_hook_state state = {0, true, false};
+    write_prot_hook_state second = {0, false, true};
+    uint8_t *backing = calloc(1, 0x1000);
+    uc_engine *uc = open_write_prot_engine(backing);
+    uc_hook hook;
+    uc_hook second_hook;
+    uint8_t mem[8];
+    uint64_t r_rbx;
+
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_WRITE_PROT, test_write_prot_hook,
+                   &state, 1, 0));
+    run_write_prot_engine(uc, UC_ERR_WRITE_PROT, mem, &r_rbx);
+    TEST_CHECK(state.calls == 1);
+
+    state = (write_prot_hook_state){0, false, true};
+    OK(uc_ctl_drop_store(uc));
+    run_write_prot_engine(uc, UC_ERR_OK, mem, &r_rbx);
+    TEST_CHECK(state.calls == 2);
+    TEST_CHECK(memcmp(mem, write_prot_stored, sizeof(mem)) == 0);
+    TEST_CHECK(r_rbx == 1);
+    OK(uc_close(uc));
+
+    uc = open_write_prot_engine(backing);
+    state = (write_prot_hook_state){0, true, false};
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_WRITE_PROT, test_write_prot_hook,
+                   &state, 1, 0));
+    OK(uc_hook_add(uc, &second_hook, UC_HOOK_MEM_WRITE_PROT,
+                   test_write_prot_hook, &second, 1, 0));
+    run_write_prot_engine(uc, UC_ERR_OK, mem, &r_rbx);
+    TEST_CHECK(state.calls == 2);
+    TEST_CHECK(second.calls == 2);
+    TEST_CHECK(memcmp(mem, write_prot_stored, sizeof(mem)) == 0);
+    TEST_CHECK(r_rbx == 1);
+    OK(uc_close(uc));
+    free(backing);
+}
+
 TEST_LIST = {{"test_map_correct", test_map_correct},
              {"test_map_wrapping", test_map_wrapping},
              {"test_mem_protect", test_mem_protect},
@@ -703,4 +846,9 @@ TEST_LIST = {{"test_map_correct", test_map_correct},
              {"test_mem_addr_size_wraparound", test_mem_addr_size_wraparound},
              {"test_smc", test_smc},
              {"test_tlbdirty_exec", test_tlbdirty_exec},
+             {"test_mem_write_prot_drop_store", test_mem_write_prot_drop_store},
+             {"test_mem_write_prot_handled_commits",
+              test_mem_write_prot_handled_commits},
+             {"test_mem_write_prot_drop_store_scope",
+              test_mem_write_prot_drop_store_scope},
              {NULL, NULL}};
