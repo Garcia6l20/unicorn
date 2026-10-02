@@ -40,6 +40,7 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
     TCGContext *tcg_ctx = uc->tcg_ctx;
     TCGOp *prev_op = NULL;
     bool block_hook = false;
+    int exit_insn = 0;
 
     /* Initialize DisasContext */
     db->tb = tb;
@@ -125,6 +126,10 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
             }
         }
 
+        if (uc_addr_is_exit(uc, db->pc_next)) {
+            exit_insn = 1;
+        }
+
         /* Disassemble one instruction.  The translate_insn hook should
            update db->pc_next and db->is_jmp to indicate what should be
            done next -- either exiting this loop or locate the start of
@@ -176,7 +181,7 @@ _end_loop:
         if (tcg_op->args[1] == 0xf8f8f8f8) {
             tcg_op->args[1] = db->tb->size;
         } else {
-            tcg_op->args[1] = db->tb->icount;
+            tcg_op->args[1] = db->tb->icount - exit_insn;
         }
     }
 }

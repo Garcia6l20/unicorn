@@ -471,6 +471,63 @@ static void test_add_block_icount_hook(void)
     OK(uc_close(uc));
 }
 
+static uint64_t block_icount_until(uc_arch arch, uc_mode mode, const char *code,
+                                   uint64_t size, uint64_t until,
+                                   bool use_exits)
+{
+    uc_engine *uc;
+    uc_hook block_hook;
+    uint64_t icount = 0;
+    uint64_t begin = code_start | (mode == UC_MODE_THUMB ? 1 : 0);
+
+    uc_common_setup(&uc, arch, mode, code, size);
+    OK(uc_hook_add(uc, &block_hook, UC_HOOK_BLOCK_ICOUNT,
+                   &test_add_block_icount_hook_block_cb, &icount, 1, 0));
+    if (use_exits) {
+        OK(uc_ctl_exits_enable(uc));
+        OK(uc_ctl_set_exits(uc, &until, 1));
+        OK(uc_emu_start(uc, begin, 0, 0, 0));
+    } else {
+        OK(uc_emu_start(uc, begin, until, 0, 0));
+    }
+    OK(uc_close(uc));
+    return icount;
+}
+
+static void test_block_icount_hook_until_mid_block(void)
+{
+    // inc eax; inc ebx; nop
+    char x86_code[] = "\x40\x43\x90";
+
+    TEST_CHECK(block_icount_until(UC_ARCH_X86, UC_MODE_32, x86_code,
+                                  sizeof(x86_code) - 1, code_start + 2,
+                                  false) == 2);
+    TEST_CHECK(block_icount_until(UC_ARCH_X86, UC_MODE_32, x86_code,
+                                  sizeof(x86_code) - 1, code_start + 2,
+                                  true) == 2);
+    TEST_CHECK(block_icount_until(UC_ARCH_X86, UC_MODE_32, x86_code,
+                                  sizeof(x86_code) - 1, code_start + 3,
+                                  false) == 3);
+}
+
+#ifdef UNICORN_HAS_ARM
+static void test_block_icount_hook_until_mid_block_arm(void)
+{
+    // movs r0, #1; movs r1, #2; movs r2, #3
+    char code[] = "\x01\x20\x02\x21\x03\x22";
+
+    TEST_CHECK(block_icount_until(UC_ARCH_ARM, UC_MODE_THUMB, code,
+                                  sizeof(code) - 1, code_start + 4,
+                                  false) == 2);
+    TEST_CHECK(block_icount_until(UC_ARCH_ARM, UC_MODE_THUMB, code,
+                                  sizeof(code) - 1, code_start + 4,
+                                  true) == 2);
+    TEST_CHECK(block_icount_until(UC_ARCH_ARM, UC_MODE_THUMB, code,
+                                  sizeof(code) - 1, code_start + 6,
+                                  false) == 3);
+}
+#endif
+
 TEST_LIST = {
     {"test_uc_ctl_mode", test_uc_ctl_mode},
     {"test_uc_ctl_page_size", test_uc_ctl_page_size},
@@ -491,4 +548,10 @@ TEST_LIST = {
     {"test_noexec", test_noexec},
     {"test_add_block_hook", test_add_block_hook},
     {"test_add_block_icount_hook", test_add_block_icount_hook},
+    {"test_block_icount_hook_until_mid_block",
+     test_block_icount_hook_until_mid_block},
+#ifdef UNICORN_HAS_ARM
+    {"test_block_icount_hook_until_mid_block_arm",
+     test_block_icount_hook_until_mid_block_arm},
+#endif
     {NULL, NULL}};
