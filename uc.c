@@ -1091,6 +1091,8 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
                     uint64_t timeout, size_t count)
 {
     uc_err err;
+    bool exit_after_insn;
+    uint64_t exit_after_insn_taken;
 
     // reset the counter
     uc->emu_counter = 0;
@@ -1239,9 +1241,18 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
         enable_emu_timer(uc, timeout * 1000); // microseconds -> nanoseconds
     }
 
+    exit_after_insn = uc->exit_after_insn;
+    exit_after_insn_taken = uc->exit_after_insn_taken;
+    uc->exit_after_insn = false;
+    uc->exit_after_insn_taken = 0;
+
     uc->vm_start(uc);
 
     uc->nested_level--;
+    if (uc->nested_level > 0) {
+        uc->exit_after_insn = exit_after_insn;
+        uc->exit_after_insn_taken = exit_after_insn_taken;
+    }
 
     // emulation is done if and only if we exit the outer uc_emu_start
     // or we may lost uc_emu_stop
@@ -3157,6 +3168,37 @@ uc_err uc_ctl(uc_engine *uc, uc_control_type control, ...)
     case UC_CTL_UC_DROP_STORE: {
         if (rw == UC_CTL_IO_WRITE) {
             uc->drop_store = true;
+        } else {
+            err = UC_ERR_ARG;
+        }
+        break;
+    }
+
+    case UC_CTL_UC_USE_EXIT_AFTER_INSN: {
+        if (rw == UC_CTL_IO_WRITE && uc->arch == UC_ARCH_ARM &&
+            uc->nested_level == 0) {
+            bool use = va_arg(args, int) != 0;
+
+            if (use != uc->use_exit_after_insn) {
+                uc->use_exit_after_insn = use;
+                if (uc->init_done) {
+                    save_jit_state(uc);
+                    uc->tb_flush(uc);
+                    restore_jit_state(uc);
+                }
+            }
+        } else {
+            err = UC_ERR_ARG;
+        }
+        break;
+    }
+
+    case UC_CTL_UC_EXIT_AFTER_INSN: {
+        if (rw == UC_CTL_IO_READ) {
+            uint64_t *taken = va_arg(args, uint64_t *);
+            *taken = uc->exit_after_insn_taken;
+        } else if (rw == UC_CTL_IO_WRITE && uc->use_exit_after_insn) {
+            uc->exit_after_insn = true;
         } else {
             err = UC_ERR_ARG;
         }

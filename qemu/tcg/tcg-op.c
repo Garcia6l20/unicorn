@@ -2852,6 +2852,7 @@ static void gen_ldst_i64(TCGContext *tcg_ctx, TCGOpcode opc, TCGv_i64 val, TCGv 
 // if so, we jump to the block epilogue to quit immediately.
 void check_exit_request(TCGContext *tcg_ctx)
 {
+    tcg_ctx->uc_insn_mem_access = true;
     // Unicorn:
     //   For ARM IT block, we couldn't exit in the middle of the
     //   block and this is the our hack here.

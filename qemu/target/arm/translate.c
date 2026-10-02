@@ -2719,6 +2719,35 @@ static void gen_goto_ptr(TCGContext *tcg_ctx)
     tcg_gen_lookup_and_goto_ptr(tcg_ctx);
 }
 
+static bool uc_exit_pending(DisasContext *s)
+{
+    return s->uc->use_exit_after_insn &&
+           (s->uc_it_mem_access || s->uc->tcg_ctx->uc_insn_mem_access);
+}
+
+static void gen_uc_exit_helper(DisasContext *s, uint32_t next_pc)
+{
+    TCGContext *tcg_ctx = s->uc->tcg_ctx;
+    TCGv_i32 pc = tcg_const_i32(tcg_ctx, next_pc);
+    TCGv_i32 insn_pc = tcg_const_i32(tcg_ctx, s->pc_curr);
+
+    gen_helper_uc_exit_after_insn(tcg_ctx, tcg_ctx->cpu_env, pc, insn_pc);
+    tcg_temp_free_i32(tcg_ctx, insn_pc);
+    tcg_temp_free_i32(tcg_ctx, pc);
+    s->uc_it_mem_access = false;
+    tcg_ctx->uc_insn_mem_access = false;
+    if (s->condjmp) {
+        s->uc_exit_on_condlabel = true;
+    }
+}
+
+static void gen_uc_exit_before_goto_tb(DisasContext *s, target_ulong dest)
+{
+    if ((s->condexec_mask & 0xf) == 0 && uc_exit_pending(s)) {
+        gen_uc_exit_helper(s, dest);
+    }
+}
+
 /* This will end the TB but doesn't guarantee we'll return to
  * cpu_loop_exec. Any live exit_requests will be processed as we
  * enter the next TB.
@@ -2744,6 +2773,7 @@ static inline void gen_jmp (DisasContext *s, uint32_t dest)
         gen_set_pc_im(s, dest);
         s->base.is_jmp = DISAS_JUMP;
     } else {
+        gen_uc_exit_before_goto_tb(s, dest);
         gen_goto_tb(s, 0, dest);
     }
 }
@@ -10851,6 +10881,7 @@ static bool trans_ISB(DisasContext *s, arg_ISB *a)
      * self-modifying code correctly and also to take
      * any pending interrupts immediately.
      */
+    gen_uc_exit_before_goto_tb(s, s->base.pc_next);
     gen_goto_tb(s, 0, s->base.pc_next);
     return true;
 }
@@ -10866,6 +10897,7 @@ static bool trans_SB(DisasContext *s, arg_SB *a)
      * for TCG; MB and end the TB instead.
      */
     tcg_gen_mb(tcg_ctx, TCG_MO_ALL | TCG_BAR_SC);
+    gen_uc_exit_before_goto_tb(s, s->base.pc_next);
     gen_goto_tb(s, 0, s->base.pc_next);
     return true;
 }
@@ -10953,6 +10985,7 @@ static void disas_arm_insn(DisasContext *s, unsigned int insn)
         // the callback might want to stop emulation immediately
         check_exit_request(tcg_ctx);
     }
+    tcg_ctx->uc_insn_mem_access = false;
 
     if (cond == 0xf) {
         /* In ARMv3 and v4 the NV condition is UNPREDICTABLE; we
@@ -11252,6 +11285,7 @@ static void arm_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     condexec = FIELD_EX32(tb_flags, TBFLAG_AM32, CONDEXEC);
     dc->condexec_mask = (condexec & 0xf) << 1;
     dc->condexec_cond = condexec >> 4;
+    dc->uc_it_mem_access = dc->condexec_mask != 0;
 
     core_mmu_idx = FIELD_EX32(tb_flags, TBFLAG_ANY, MMUIDX);
     dc->mmu_idx = core_to_arm_mmu_idx(env, core_mmu_idx);
@@ -11449,6 +11483,36 @@ static void arm_post_translate_insn(DisasContext *dc)
     translator_loop_temp_check(&dc->base);
 }
 
+static void gen_uc_exit_after_insn(DisasContext *dc)
+{
+    TCGContext *tcg_ctx = dc->uc->tcg_ctx;
+    uint32_t next_pc;
+
+    if (!dc->uc->use_exit_after_insn) {
+        return;
+    }
+    dc->uc_it_mem_access |= tcg_ctx->uc_insn_mem_access;
+    if (!dc->uc_it_mem_access || dc->condexec_mask ||
+        dc->base.is_jmp == DISAS_NORETURN) {
+        return;
+    }
+
+    switch (dc->base.is_jmp) {
+    case DISAS_NEXT:
+    case DISAS_TOO_MANY:
+    case DISAS_UPDATE:
+        next_pc = dc->base.pc_next;
+        break;
+    case DISAS_JUMP:
+        next_pc = UC_EXIT_AFTER_INSN_PC_IN_R15;
+        break;
+    default:
+        next_pc = UC_EXIT_AFTER_INSN_AT_TB_END;
+        break;
+    }
+    gen_uc_exit_helper(dc, next_pc);
+}
+
 static void arm_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 {
     DisasContext *dc = container_of(dcbase, DisasContext, base);
@@ -11486,6 +11550,7 @@ static void arm_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         disas_arm_insn(dc, insn);
 
         arm_post_translate_insn(dc);
+        gen_uc_exit_after_insn(dc);
 
         /* ARM is a fixed-length ISA.  We performed the cross-page check
            in init_disas_context by adjusting max_insns.  */
@@ -11605,6 +11670,7 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         check_exit_request(tcg_ctx);
     }
 
+    tcg_ctx->uc_insn_mem_access = false;
     tcg_ctx->pc_start = dc->base.pc_next - insn_size;
     if (is_16bit) {
         disas_thumb_insn(dc, insn);
@@ -11623,6 +11689,8 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     }
 
     arm_post_translate_insn(dc);
+
+    gen_uc_exit_after_insn(dc);
 
     /* Thumb is a variable-length ISA.  Stop translation when the next insn
      * will touch a new page.  This ensures that prefetch aborts occur at
@@ -11764,6 +11832,10 @@ static void arm_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
             gen_set_pc_im(dc, dc->base.pc_next);
             gen_singlestep_exception(dc);
         } else {
+            if (dc->uc_exit_on_condlabel ||
+                (dc->condexec_mask == 0 && uc_exit_pending(dc))) {
+                gen_uc_exit_helper(dc, dc->base.pc_next);
+            }
             gen_goto_tb(dc, 1, dc->base.pc_next);
         }
     }

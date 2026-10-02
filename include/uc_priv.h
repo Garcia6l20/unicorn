@@ -394,6 +394,9 @@ struct uc_struct {
     uint64_t invalid_addr; // invalid address to be accessed
     int invalid_error;     // invalid memory code: 1 = READ, 2 = WRITE, 3 = CODE
     bool drop_store;
+    bool use_exit_after_insn;
+    bool exit_after_insn;
+    uint64_t exit_after_insn_taken;
 
     int use_exits;
     uint64_t exits[UC_MAX_NESTED_LEVEL]; // When multiple exits is not enabled.

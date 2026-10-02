@@ -669,6 +669,31 @@ typedef enum uc_control_type {
     // store. A callback returning false cancels the request.
     // Write: @args = ()
     UC_CTL_UC_DROP_STORE,
+    // Allow UC_CTL_UC_EXIT_AFTER_INSN. Off by default, so that translated
+    // code carries no check unless it is used. Changing it flushes all
+    // translation blocks. Not during uc_emu_start. UC_ARCH_ARM only.
+    // UC_ERR_ARG on other architectures and from a callback.
+    // Write: @args = (int)
+    UC_CTL_UC_USE_EXIT_AFTER_INSN,
+    // Write: stop emulation once the instruction being executed completes,
+    // with the PC at the next instruction, or at the branch target for an
+    // instruction that branches, and every memory access of the instruction
+    // done once. Meant for memory access callbacks (UC_HOOK_MEM_* and
+    // uc_mmio_map), where uc_emu_stop leaves the PC on the instruction and a
+    // resume repeats its accesses. Only instructions with a load or store
+    // check the request: accesses the CPU makes on its own, such as
+    // M-profile exception stacking, do not. Inside a Thumb IT block the stop
+    // is taken after the last instruction of the block. Requires
+    // UC_CTL_UC_USE_EXIT_AFTER_INSN, UC_ERR_ARG otherwise. uc_emu_start
+    // clears a pending request, a nested uc_emu_start keeps it for the outer
+    // run.
+    // Read: the address of the instruction after which the last request was
+    // taken, the last instruction of the block for an IT block. 0 when no
+    // request was taken since uc_emu_start. A nested uc_emu_start keeps the
+    // outer run's value. Available whether the feature is enabled or not.
+    // Write: no arguments
+    // Read: @args = (uint64_t*)
+    UC_CTL_UC_EXIT_AFTER_INSN,
 } uc_control_type;
 
 /*
@@ -763,6 +788,14 @@ See sample_ctl.c for a detailed example.
 #define uc_ctl_prealloc(uc, prealloc)                                          \
     uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_PREALLOC, 1), (prealloc))
 #define uc_ctl_drop_store(uc) uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_DROP_STORE, 0))
+#define uc_ctl_exit_after_insn_enable(uc)                                      \
+    uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_USE_EXIT_AFTER_INSN, 1), 1)
+#define uc_ctl_exit_after_insn_disable(uc)                                     \
+    uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_USE_EXIT_AFTER_INSN, 1), 0)
+#define uc_ctl_exit_after_insn(uc)                                             \
+    uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_EXIT_AFTER_INSN, 0))
+#define uc_ctl_exit_after_insn_taken(uc, ptr)                                  \
+    uc_ctl(uc, UC_CTL_READ(UC_CTL_UC_EXIT_AFTER_INSN, 1), (ptr))
 
 // Opaque storage for CPU context, used with uc_context_*()
 struct uc_context;

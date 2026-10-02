@@ -97,6 +97,8 @@ typedef struct DisasContext {
 
     // Unicorn
     struct uc_struct *uc;
+    bool uc_it_mem_access;
+    bool uc_exit_on_condlabel;
 } DisasContext;
 
 typedef struct DisasCompare {
