@@ -1225,4 +1225,11 @@ bool get_phys_addr(CPUARMState *env, target_ulong address,
 
 void arm_log_exception(int idx);
 
+/**
+ * Unicorn: next_pc values of helper_uc_exit_after_insn that are not a pc.
+ * Instruction addresses are even, so odd values cannot clash with one.
+ */
+#define UC_EXIT_AFTER_INSN_PC_IN_R15 1
+#define UC_EXIT_AFTER_INSN_AT_TB_END 3
+
 #endif

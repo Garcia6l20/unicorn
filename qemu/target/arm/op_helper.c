@@ -280,6 +280,32 @@ static inline int check_wfx_trap(CPUARMState *env, bool is_wfe)
     return 0;
 }
 
+void HELPER(uc_exit_after_insn)(CPUARMState *env, uint32_t next_pc,
+                                uint32_t insn_pc)
+{
+    struct uc_struct *uc = env->uc;
+    CPUState *cs = env_cpu(env);
+
+    if (!uc->exit_after_insn) {
+        return;
+    }
+    uc->exit_after_insn = false;
+    uc->exit_after_insn_taken = insn_pc;
+    uc->stop_request = true;
+    cpu_exit(cs);
+    if (next_pc == UC_EXIT_AFTER_INSN_AT_TB_END) {
+        return;
+    }
+    if (next_pc != UC_EXIT_AFTER_INSN_PC_IN_R15) {
+        env->regs[15] = next_pc;
+    }
+    if (uc->nested_level == 1) {
+        tb_exec_unlock(uc);
+    }
+    cs->tcg_exit_req = 0;
+    cpu_loop_exit(cs);
+}
+
 void HELPER(wfi)(CPUARMState *env, uint32_t insn_len)
 {
     CPUState *cs = env_cpu(env);
