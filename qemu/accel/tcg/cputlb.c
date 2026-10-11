@@ -807,6 +807,24 @@ static void tlb_add_large_page(CPUArchState *env, int mmu_idx,
  * Called from TCG-generated code, which is under an RCU read-side
  * critical section.
  */
+static bool uc_mem_hooks_cover(struct uc_struct *uc, int idx, hwaddr first,
+                               hwaddr last)
+{
+    struct list_item *cur;
+
+    for (cur = uc->hook[idx].head; cur != NULL; cur = cur->next) {
+        struct hook *hook = (struct hook *)cur->data;
+        if (hook->to_delete) {
+            continue;
+        }
+        if (hook->begin > hook->end ||
+            (hook->begin <= last && first <= hook->end)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
                              hwaddr paddr, MemTxAttrs attrs, int prot,
                              int mmu_idx, target_ulong size)
@@ -944,7 +962,11 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
     tn.paddr = paddr_page;
     if (prot & PAGE_READ) {
         tn.addr_read = address;
-        if (wp_flags & BP_MEM_READ) {
+        if ((wp_flags & BP_MEM_READ) ||
+            uc_mem_hooks_cover(cpu->uc, UC_HOOK_MEM_READ_IDX, paddr_page,
+                               paddr_page + TARGET_PAGE_SIZE - 1) ||
+            uc_mem_hooks_cover(cpu->uc, UC_HOOK_MEM_READ_AFTER_IDX, paddr_page,
+                               paddr_page + TARGET_PAGE_SIZE - 1)) {
             tn.addr_read |= TLB_WATCHPOINT;
         }
     } else {
@@ -963,7 +985,9 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
         if (prot & PAGE_WRITE_INV) {
             tn.addr_write |= TLB_INVALID_MASK;
         }
-        if (wp_flags & BP_MEM_WRITE) {
+        if ((wp_flags & BP_MEM_WRITE) ||
+            uc_mem_hooks_cover(cpu->uc, UC_HOOK_MEM_WRITE_IDX, paddr_page,
+                               paddr_page + TARGET_PAGE_SIZE - 1)) {
             tn.addr_write |= TLB_WATCHPOINT;
         }
     }

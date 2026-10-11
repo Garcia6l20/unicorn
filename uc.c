@@ -1929,6 +1929,12 @@ uc_err uc_mem_unmap(struct uc_struct *uc, uint64_t address, uint64_t size)
     return UC_ERR_OK;
 }
 
+static bool uc_hook_is_mem_access(int type)
+{
+    return (type & (UC_HOOK_MEM_READ | UC_HOOK_MEM_READ_AFTER |
+                    UC_HOOK_MEM_WRITE)) != 0;
+}
+
 UNICORN_EXPORT
 uc_err uc_hook_add(uc_engine *uc, uc_hook *hh, int type, void *callback,
                    void *user_data, uint64_t begin, uint64_t end, ...)
@@ -2084,6 +2090,10 @@ uc_err uc_hook_add(uc_engine *uc, uc_hook *hh, int type, void *callback,
         i++;
     }
 
+    if (hook->refs != 0 && uc_hook_is_mem_access(type)) {
+        uc->tcg_flush_tlb(uc);
+    }
+
     // we didn't use the hook
     // TODO: return an error?
     if (hook->refs == 0) {
@@ -2098,6 +2108,7 @@ UNICORN_EXPORT
 uc_err uc_hook_del(uc_engine *uc, uc_hook hh)
 {
     int i;
+    bool found = false;
     struct hook *hook = (struct hook *)hh;
 
     UC_INIT(uc);
@@ -2118,7 +2129,12 @@ uc_err uc_hook_del(uc_engine *uc, uc_hook hh)
             hook->to_delete = true;
             uc->hooks_count[i]--;
             hook_append(&uc->hooks_to_del, hook);
+            found = true;
         }
+    }
+
+    if (found && uc_hook_is_mem_access(hook->type)) {
+        uc->tcg_flush_tlb(uc);
     }
 
     restore_jit_state(uc);

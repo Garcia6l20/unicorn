@@ -858,6 +858,264 @@ static void test_mem_write_hook_flush_tlb(void)
     OK(uc_close(uc));
 }
 
+typedef struct {
+    int reads;
+    int writes;
+    int outside;
+    int dec_calls;
+    uc_hook write_hook;
+} page_hook_state;
+
+static const char page_hook_loop[] =
+    "\xa1\x00\x20\x00\x00"
+    "\xa3\x04\x20\x00\x00"
+    "\xa3\x00\x30\x00\x00"
+    "\x49"
+    "\x75\xee"
+    "\x90\x90";
+
+static void page_hook_read_cb(uc_engine *uc, uc_mem_type type,
+                              uint64_t address, int size, int64_t value,
+                              void *user_data)
+{
+    page_hook_state *state = (page_hook_state *)user_data;
+    state->reads++;
+    if (address < 0x2000 || address > 0x2fff) {
+        state->outside++;
+    }
+}
+
+static void page_hook_write_cb(uc_engine *uc, uc_mem_type type,
+                               uint64_t address, int size, int64_t value,
+                               void *user_data)
+{
+    page_hook_state *state = (page_hook_state *)user_data;
+    state->writes++;
+    if (address < 0x2000 || address > 0x2fff) {
+        state->outside++;
+    }
+}
+
+static uc_engine *open_page_hook_engine(void)
+{
+    uc_engine *uc;
+    uint32_t value = 0x11223344;
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_32, &uc));
+    OK(uc_mem_map(uc, 0x1000, 0x1000, UC_PROT_ALL));
+    OK(uc_mem_map(uc, 0x2000, 0x1000, UC_PROT_READ | UC_PROT_WRITE));
+    OK(uc_mem_map(uc, 0x3000, 0x1000, UC_PROT_READ | UC_PROT_WRITE));
+    OK(uc_mem_write(uc, 0x1000, page_hook_loop, sizeof(page_hook_loop) - 1));
+    OK(uc_mem_write(uc, 0x2000, &value, sizeof(value)));
+    return uc;
+}
+
+static void run_page_hook_loop(uc_engine *uc, uint32_t iterations)
+{
+    OK(uc_reg_write(uc, UC_X86_REG_ECX, &iterations));
+    OK(uc_emu_start(uc, 0x1000, 0x1013, 0, 0));
+}
+
+static void test_mem_hook_bounded_to_page(void)
+{
+    uc_engine *uc = open_page_hook_engine();
+    uc_hook read_hook, write_hook;
+    page_hook_state state = {0};
+    uint32_t outside = 0;
+
+    OK(uc_hook_add(uc, &read_hook, UC_HOOK_MEM_READ, page_hook_read_cb,
+                   &state, 0x2000, 0x2fff));
+    OK(uc_hook_add(uc, &write_hook, UC_HOOK_MEM_WRITE, page_hook_write_cb,
+                   &state, 0x2000, 0x2fff));
+    run_page_hook_loop(uc, 5);
+
+    OK(uc_mem_read(uc, 0x3000, &outside, sizeof(outside)));
+    TEST_CHECK(state.reads == 5);
+    TEST_CHECK(state.writes == 5);
+    TEST_CHECK(state.outside == 0);
+    TEST_CHECK(outside == 0x11223344);
+
+    OK(uc_close(uc));
+}
+
+typedef struct {
+    int calls;
+    int wrong_value;
+    uint64_t addresses[4];
+} read_after_state;
+
+static void page_hook_read_after_cb(uc_engine *uc, uc_mem_type type,
+                                    uint64_t address, int size, int64_t value,
+                                    void *user_data)
+{
+    read_after_state *state = (read_after_state *)user_data;
+    if (value != 0x11223344 || address != 0x2000) {
+        state->wrong_value++;
+    }
+    state->calls++;
+}
+
+static void test_mem_hook_read_after_bounded(void)
+{
+    uc_engine *uc = open_page_hook_engine();
+    uc_hook hook;
+    read_after_state state = {0};
+
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_READ_AFTER, page_hook_read_after_cb,
+                   &state, 0x2000, 0x2fff));
+    run_page_hook_loop(uc, 5);
+    TEST_CHECK(state.calls == 5);
+    TEST_CHECK(state.wrong_value == 0);
+
+    OK(uc_close(uc));
+}
+
+static void page_hook_span_cb(uc_engine *uc, uc_mem_type type,
+                              uint64_t address, int size, int64_t value,
+                              void *user_data)
+{
+    read_after_state *state = (read_after_state *)user_data;
+    if (state->calls < 4) {
+        state->addresses[state->calls] = address;
+    }
+    state->calls++;
+}
+
+static void test_mem_hook_range_spanning_pages(void)
+{
+    uc_engine *uc = open_page_hook_engine();
+    uc_hook hook;
+    read_after_state state = {0};
+    const char code[] = "\xb8\x44\x33\x22\x11"
+                        "\xa3\x00\x20\x00\x00"
+                        "\xa3\x08\x30\x00\x00"
+                        "\xa3\xfc\x2f\x00\x00"
+                        "\xa3\x00\x30\x00\x00"
+                        "\x90\x90";
+
+    OK(uc_mem_write(uc, 0x1100, code, sizeof(code) - 1));
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_WRITE, page_hook_span_cb, &state,
+                   0x2ffc, 0x3003));
+    OK(uc_emu_start(uc, 0x1100, 0x1100 + sizeof(code) - 2, 0, 0));
+    TEST_CHECK(state.calls == 2);
+    TEST_CHECK(state.addresses[0] == 0x2ffc);
+    TEST_CHECK(state.addresses[1] == 0x3000);
+
+    OK(uc_close(uc));
+}
+
+static void test_mem_hook_added_after_translation(void)
+{
+    uc_engine *uc = open_page_hook_engine();
+    uc_hook read_hook, write_hook;
+    page_hook_state state = {0};
+
+    run_page_hook_loop(uc, 5);
+    OK(uc_hook_add(uc, &read_hook, UC_HOOK_MEM_READ, page_hook_read_cb,
+                   &state, 0x2000, 0x2fff));
+    OK(uc_hook_add(uc, &write_hook, UC_HOOK_MEM_WRITE, page_hook_write_cb,
+                   &state, 0x2000, 0x2fff));
+    run_page_hook_loop(uc, 5);
+    TEST_CHECK(state.reads == 5);
+    TEST_CHECK(state.writes == 5);
+
+    OK(uc_hook_del(uc, read_hook));
+    OK(uc_hook_del(uc, write_hook));
+    run_page_hook_loop(uc, 5);
+    TEST_CHECK(state.reads == 5);
+    TEST_CHECK(state.writes == 5);
+
+    OK(uc_close(uc));
+}
+
+static void page_hook_dec_cb(uc_engine *uc, uint64_t address, uint32_t size,
+                             void *user_data)
+{
+    page_hook_state *state = (page_hook_state *)user_data;
+    state->dec_calls++;
+    if (state->dec_calls == 2) {
+        OK(uc_hook_add(uc, &state->write_hook, UC_HOOK_MEM_WRITE,
+                       page_hook_write_cb, state, 0x2000, 0x2fff));
+    } else if (state->dec_calls == 4) {
+        OK(uc_hook_del(uc, state->write_hook));
+    }
+}
+
+static void test_mem_hook_added_mid_run(void)
+{
+    uc_engine *uc = open_page_hook_engine();
+    uc_hook code_hook;
+    page_hook_state state = {0};
+
+    OK(uc_hook_add(uc, &code_hook, UC_HOOK_CODE, page_hook_dec_cb, &state,
+                   0x100f, 0x100f));
+    run_page_hook_loop(uc, 6);
+    TEST_CHECK(state.dec_calls == 6);
+    TEST_CHECK(state.writes == 2);
+
+    OK(uc_close(uc));
+}
+
+static void page_hook_self_delete_cb(uc_engine *uc, uc_mem_type type,
+                                     uint64_t address, int size,
+                                     int64_t value, void *user_data)
+{
+    page_hook_state *state = (page_hook_state *)user_data;
+    state->writes++;
+    OK(uc_hook_del(uc, state->write_hook));
+}
+
+static void test_mem_hook_deleted_in_its_callback(void)
+{
+    uc_engine *uc = open_page_hook_engine();
+    page_hook_state state = {0};
+    uint32_t stored = 0;
+
+    OK(uc_hook_add(uc, &state.write_hook, UC_HOOK_MEM_WRITE,
+                   page_hook_self_delete_cb, &state, 0x2000, 0x2fff));
+    run_page_hook_loop(uc, 3);
+
+    OK(uc_mem_read(uc, 0x2004, &stored, sizeof(stored)));
+    TEST_CHECK(state.writes == 1);
+    TEST_CHECK(stored == 0x11223344);
+
+    OK(uc_close(uc));
+}
+
+static void test_mem_hook_arm_exclusive_store(void)
+{
+    uc_engine *uc;
+    uc_hook read_hook, write_hook;
+    page_hook_state state = {0};
+    const char code[] = "\x50\xe8\x00\x2f"
+                        "\x40\xe8\x00\x13"
+                        "\x00\xbf\x00\xbf";
+    uint32_t r0 = 0x2000, r1 = 0x55, r2 = 0, r3 = 1, stored = 0;
+
+    OK(uc_open(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS, &uc));
+    OK(uc_mem_map(uc, 0x1000, 0x1000, UC_PROT_ALL));
+    OK(uc_mem_map(uc, 0x2000, 0x1000, UC_PROT_READ | UC_PROT_WRITE));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code) - 1));
+    OK(uc_reg_write(uc, UC_ARM_REG_R0, &r0));
+    OK(uc_reg_write(uc, UC_ARM_REG_R1, &r1));
+    OK(uc_reg_write(uc, UC_ARM_REG_R3, &r3));
+    OK(uc_hook_add(uc, &read_hook, UC_HOOK_MEM_READ, page_hook_read_cb,
+                   &state, 0x2000, 0x2fff));
+    OK(uc_hook_add(uc, &write_hook, UC_HOOK_MEM_WRITE, page_hook_write_cb,
+                   &state, 0x2000, 0x2fff));
+    OK(uc_emu_start(uc, 0x1000 | 1, 0x100a, 0, 0));
+
+    OK(uc_reg_read(uc, UC_ARM_REG_R2, &r2));
+    OK(uc_reg_read(uc, UC_ARM_REG_R3, &r3));
+    OK(uc_mem_read(uc, 0x2000, &stored, sizeof(stored)));
+    TEST_CHECK(state.reads == 2);
+    TEST_CHECK(state.writes == 1);
+    TEST_CHECK(r3 == 0);
+    TEST_CHECK(stored == 0x55);
+
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_map_correct", test_map_correct},
              {"test_map_wrapping", test_map_wrapping},
              {"test_mem_protect", test_mem_protect},
@@ -886,4 +1144,16 @@ TEST_LIST = {{"test_map_correct", test_map_correct},
              {"test_mem_write_prot_drop_store_scope",
               test_mem_write_prot_drop_store_scope},
              {"test_mem_write_hook_flush_tlb", test_mem_write_hook_flush_tlb},
+             {"test_mem_hook_bounded_to_page", test_mem_hook_bounded_to_page},
+             {"test_mem_hook_read_after_bounded",
+              test_mem_hook_read_after_bounded},
+             {"test_mem_hook_range_spanning_pages",
+              test_mem_hook_range_spanning_pages},
+             {"test_mem_hook_added_after_translation",
+              test_mem_hook_added_after_translation},
+             {"test_mem_hook_added_mid_run", test_mem_hook_added_mid_run},
+             {"test_mem_hook_deleted_in_its_callback",
+              test_mem_hook_deleted_in_its_callback},
+             {"test_mem_hook_arm_exclusive_store",
+              test_mem_hook_arm_exclusive_store},
              {NULL, NULL}};
