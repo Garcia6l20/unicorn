@@ -126,6 +126,7 @@
 #define memory_map memory_map_mips64
 #define memory_map_io memory_map_io_mips64
 #define memory_map_ptr memory_map_ptr_mips64
+#define memory_map_alias memory_map_alias_mips64
 #define memory_cow memory_cow_mips64
 #define memory_unmap memory_unmap_mips64
 #define memory_moveout memory_moveout_mips64

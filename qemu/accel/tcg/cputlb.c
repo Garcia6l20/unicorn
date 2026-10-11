@@ -807,6 +807,14 @@ static void tlb_add_large_page(CPUArchState *env, int mmu_idx,
  * Called from TCG-generated code, which is under an RCU read-side
  * critical section.
  */
+static bool uc_ram_exec_somewhere(MemoryRegion *mr)
+{
+    MemoryRegion *target = mr->uc_alias_of ? mr->uc_alias_of : mr;
+
+    return (mr->perms & UC_PROT_EXEC) || (target->perms & UC_PROT_EXEC) ||
+           target->uc_alias_exec_count > 0;
+}
+
 static bool uc_mem_hooks_cover(struct uc_struct *uc, int idx, hwaddr first,
                                hwaddr last)
 {
@@ -896,7 +904,7 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
         if (prot & PAGE_WRITE) {
             if (section->readonly) {
                 write_address |= TLB_DISCARD_WRITE;
-            } else if ((section->mr->perms & UC_PROT_EXEC) &&
+            } else if (uc_ram_exec_somewhere(section->mr) &&
                        cpu_physical_memory_is_clean(iotlb)) {
                 write_address |= TLB_NOTDIRTY;
             }
@@ -1225,7 +1233,7 @@ static void notdirty_write(CPUState *cpu, vaddr mem_vaddr, unsigned size,
     ram_addr_t ram_addr = mem_vaddr + iotlbentry->addr;
     MemoryRegion *mr = cpu->uc->memory_mapping(cpu->uc, tlbe->paddr | (mem_vaddr & ~TARGET_PAGE_MASK));
 
-    if (mr && (mr->perms & UC_PROT_EXEC) != 0) {
+    if (mr && uc_ram_exec_somewhere(mr)) {
         struct page_collection *pages
             = page_collection_lock(cpu->uc, ram_addr, ram_addr + size);
         tb_invalidate_phys_page_fast(cpu->uc, pages, ram_addr, size, retaddr);
@@ -1239,6 +1247,7 @@ static void notdirty_write(CPUState *cpu, vaddr mem_vaddr, unsigned size,
     // , then never clean the tlb
     if (!(!mr || (tlbe->addr_write != -1 && mr->priority < cpu->uc->snapshot_level)) &&
             !(tlbe->addr_code != -1) &&
+            !mr->uc_alias_of && mr->uc_alias_count == 0 &&
             !uc_mem_hook_installed(cpu->uc, tlbe->paddr | (mem_vaddr & ~TARGET_PAGE_MASK))) {
         tlb_set_dirty(cpu, mem_vaddr);
     }

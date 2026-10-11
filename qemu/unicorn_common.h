@@ -196,6 +196,7 @@ static inline void uc_common_init(struct uc_struct* uc)
     uc->vm_start = vm_start;
     uc->memory_map = memory_map;
     uc->memory_map_ptr = memory_map_ptr;
+    uc->memory_map_alias = memory_map_alias;
     uc->memory_unmap = memory_unmap;
     uc->memory_moveout = memory_moveout;
     uc->memory_movein = memory_movein;

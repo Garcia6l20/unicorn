@@ -126,6 +126,7 @@
 #define memory_map memory_map_aarch64
 #define memory_map_io memory_map_io_aarch64
 #define memory_map_ptr memory_map_ptr_aarch64
+#define memory_map_alias memory_map_alias_aarch64
 #define memory_cow memory_cow_aarch64
 #define memory_unmap memory_unmap_aarch64
 #define memory_moveout memory_moveout_aarch64

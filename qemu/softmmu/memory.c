@@ -83,6 +83,30 @@ MemoryRegion *memory_map_ptr(struct uc_struct *uc, hwaddr begin, size_t size, ui
     return ram;
 }
 
+MemoryRegion *memory_map_alias(struct uc_struct *uc, hwaddr begin, uint32_t perms, MemoryRegion *target)
+{
+    MemoryRegion *alias = g_new(MemoryRegion, 1);
+
+    memory_region_init(uc, alias, int128_get64(target->size));
+    alias->ram = true;
+    alias->terminates = true;
+    alias->ram_block = target->ram_block;
+    alias->perms = perms;
+    alias->uc_alias_of = target;
+    target->uc_alias_count++;
+    if (perms & UC_PROT_EXEC) {
+        target->uc_alias_exec_count++;
+    }
+
+    memory_region_add_subregion(uc->system_memory, begin, alias);
+
+    if (uc->cpu) {
+        tlb_flush(uc->cpu);
+    }
+
+    return alias;
+}
+
 static void make_contained(struct uc_struct *uc, MemoryRegion *current)
 {
     hwaddr addr = current->addr;

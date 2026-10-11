@@ -1290,6 +1290,29 @@ UNICORN_EXPORT
 uc_err uc_mem_map_ptr(uc_engine *uc, uint64_t address, uint64_t size,
                       uint32_t perms, void *ptr);
 
+/**
+ Map a second window onto memory already mapped, sharing its storage.
+ A store through either window is seen through the other, and code
+ translated from one window is invalidated by a store through any window.
+
+ @uc: handle returned by uc_open()
+ @address: starting address of the new window, aligned like uc_mem_map().
+ @size: size of the window. It must equal the size of the region at @target.
+ @perms: permissions of this window, independent of the target's.
+ @target: start address of a region mapped by uc_mem_map() or
+    uc_mem_map_ptr(), not itself an alias.
+
+ uc_mem_unmap() of the whole window removes it. Unmapping part of a window,
+ or any part of a region that has windows, uc_mem_protect() over either,
+ and a memory snapshot while any window exists give UC_ERR_ARG.
+
+ @return UC_ERR_OK on success, or other value on failure (refer to uc_err enum
+   for detailed error).
+*/
+UNICORN_EXPORT
+uc_err uc_mem_map_alias(uc_engine *uc, uint64_t address, uint64_t size,
+                        uint32_t perms, uint64_t target);
+
 /*
  Map MMIO in for emulation.
  This API adds a MMIO region that can be used by emulation.

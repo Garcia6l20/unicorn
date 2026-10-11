@@ -126,6 +126,7 @@
 #define memory_map memory_map_sparc
 #define memory_map_io memory_map_io_sparc
 #define memory_map_ptr memory_map_ptr_sparc
+#define memory_map_alias memory_map_alias_sparc
 #define memory_cow memory_cow_sparc
 #define memory_unmap memory_unmap_sparc
 #define memory_moveout memory_moveout_sparc

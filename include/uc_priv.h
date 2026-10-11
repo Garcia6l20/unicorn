@@ -110,6 +110,10 @@ typedef MemoryRegion *(*uc_args_uc_ram_size_ptr_t)(struct uc_struct *,
 
 typedef void (*uc_mem_unmap_t)(struct uc_struct *, MemoryRegion *mr);
 
+typedef MemoryRegion *(*uc_args_uc_ram_alias_t)(struct uc_struct *,
+                                                hwaddr begin, uint32_t perms,
+                                                MemoryRegion *target);
+
 typedef MemoryRegion *(*uc_memory_mapping_t)(struct uc_struct *, hwaddr addr);
 
 typedef void (*uc_memory_filter_t)(MemoryRegion *, int32_t);
@@ -303,6 +307,7 @@ struct uc_struct {
     uc_args_uc_long_t tcg_exec_init;
     uc_args_uc_ram_size_t memory_map;
     uc_args_uc_ram_size_ptr_t memory_map_ptr;
+    uc_args_uc_ram_alias_t memory_map_alias;
     uc_memory_mapping_t memory_mapping;
     uc_memory_filter_t memory_filter_subregions;
     uc_flatview_copy_t flatview_copy;
@@ -397,6 +402,7 @@ struct uc_struct {
     bool use_exit_after_insn;
     bool exit_after_insn;
     uint64_t exit_after_insn_taken;
+    uint32_t mem_alias_count;
 
     int use_exits;
     uint64_t exits[UC_MAX_NESTED_LEVEL]; // When multiple exits is not enabled.

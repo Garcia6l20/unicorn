@@ -1455,6 +1455,79 @@ uc_err uc_mem_map_ptr(uc_engine *uc, uint64_t address, uint64_t size,
 }
 
 UNICORN_EXPORT
+uc_err uc_mem_map_alias(uc_engine *uc, uint64_t address, uint64_t size,
+                        uint32_t perms, uint64_t target)
+{
+    MemoryRegion *mr;
+    uc_err res;
+
+    UC_INIT(uc);
+
+    if (uc->snapshot_level > 0) {
+        restore_jit_state(uc);
+        return UC_ERR_ARG;
+    }
+
+    res = mem_map_check(uc, address, size, perms);
+    if (res) {
+        restore_jit_state(uc);
+        return res;
+    }
+
+    mr = uc->memory_mapping(uc, target);
+    if (mr == NULL || !mr->ram || mr->uc_alias_of != NULL ||
+        mr->container != uc->system_memory || mr->addr != target ||
+        int128_get64(mr->size) != size) {
+        restore_jit_state(uc);
+        return UC_ERR_ARG;
+    }
+
+    res = mem_map(uc, uc->memory_map_alias(uc, address, perms, mr));
+    if (res == UC_ERR_OK) {
+        uc->mem_alias_count++;
+    }
+    restore_jit_state(uc);
+    return res;
+}
+
+static bool mem_area_touches_alias(uc_engine *uc, uint64_t address,
+                                   uint64_t size, bool whole_alias_ok)
+{
+    MemoryRegion *mr;
+    uint64_t count = 0, len;
+
+    if (uc->mem_alias_count == 0) {
+        return false;
+    }
+    while (count < size) {
+        mr = uc->memory_mapping(uc, address);
+        len = memory_region_len(uc, mr, address, size - count);
+        if (mr->uc_alias_count > 0) {
+            return true;
+        }
+        if (mr->uc_alias_of != NULL &&
+            (!whole_alias_ok || address != mr->addr ||
+             len != int128_get64(mr->size))) {
+            return true;
+        }
+        count += len;
+        address += len;
+    }
+    return false;
+}
+
+static void mem_alias_unlink(uc_engine *uc, MemoryRegion *mr)
+{
+    MemoryRegion *target = mr->uc_alias_of;
+
+    target->uc_alias_count--;
+    if (mr->perms & UC_PROT_EXEC) {
+        target->uc_alias_exec_count--;
+    }
+    uc->mem_alias_count--;
+}
+
+UNICORN_EXPORT
 uc_err uc_mmio_map(uc_engine *uc, uint64_t address, uint64_t size,
                    uc_cb_mmio_read_t read_cb, void *user_data_read,
                    uc_cb_mmio_write_t write_cb, void *user_data_write)
@@ -1784,6 +1857,11 @@ uc_err uc_mem_protect(struct uc_struct *uc, uint64_t address, uint64_t size,
         return UC_ERR_NOMEM;
     }
 
+    if (mem_area_touches_alias(uc, address, size, false)) {
+        restore_jit_state(uc);
+        return UC_ERR_ARG;
+    }
+
     // Now we know entire region is mapped, so change permissions
     // We may need to split regions if this area spans adjacent regions
     addr = address;
@@ -1890,6 +1968,11 @@ uc_err uc_mem_unmap(struct uc_struct *uc, uint64_t address, uint64_t size)
         return UC_ERR_NOMEM;
     }
 
+    if (mem_area_touches_alias(uc, address, size, true)) {
+        restore_jit_state(uc);
+        return UC_ERR_ARG;
+    }
+
     if (uc->snapshot_level > 0) {
         uc_err res = uc_mem_unmap_snapshot(uc, address, size, NULL);
         restore_jit_state(uc);
@@ -1919,6 +2002,9 @@ uc_err uc_mem_unmap(struct uc_struct *uc, uint64_t address, uint64_t size)
         // so unmap here
         mr = uc->memory_mapping(uc, addr);
         if (mr != NULL) {
+            if (mr->uc_alias_of != NULL) {
+                mem_alias_unlink(uc, mr);
+            }
             uc->memory_unmap(uc, mr);
         }
         count += len;
@@ -3233,6 +3319,9 @@ uc_err uc_ctl(uc_engine *uc, uc_control_type control, ...)
 
 static uc_err uc_snapshot(struct uc_struct *uc)
 {
+    if (uc->mem_alias_count > 0) {
+        return UC_ERR_ARG;
+    }
     if (uc->snapshot_level == INT32_MAX) {
         return UC_ERR_RESOURCE;
     }

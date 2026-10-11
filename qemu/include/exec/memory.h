@@ -323,6 +323,9 @@ struct MemoryRegion {
     struct uc_struct *uc;
     uint32_t perms;
     hwaddr end;
+    MemoryRegion *uc_alias_of;
+    uint32_t uc_alias_count;
+    uint32_t uc_alias_exec_count;
 };
 
 struct IOMMUMemoryRegion {
@@ -1213,6 +1216,7 @@ static inline MemOp devend_memop(enum device_endian end)
 
 MemoryRegion *memory_map(struct uc_struct *uc, hwaddr begin, size_t size, uint32_t perms);
 MemoryRegion *memory_map_ptr(struct uc_struct *uc, hwaddr begin, size_t size, uint32_t perms, void *ptr);
+MemoryRegion *memory_map_alias(struct uc_struct *uc, hwaddr begin, uint32_t perms, MemoryRegion *target);
  MemoryRegion *memory_map_io(struct uc_struct *uc, ram_addr_t begin, size_t size, uc_cb_mmio_read_t read_cb,
                              uc_cb_mmio_write_t write_cb, void *user_data_read, void *user_data_write);
 MemoryRegion *memory_cow(struct uc_struct *uc, MemoryRegion *parrent, hwaddr begin, size_t size);

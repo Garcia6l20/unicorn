@@ -126,6 +126,7 @@
 #define memory_map memory_map_tricore
 #define memory_map_io memory_map_io_tricore
 #define memory_map_ptr memory_map_ptr_tricore
+#define memory_map_alias memory_map_alias_tricore
 #define memory_cow memory_cow_tricore
 #define memory_unmap memory_unmap_tricore
 #define memory_moveout memory_moveout_tricore

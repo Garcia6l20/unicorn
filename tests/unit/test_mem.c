@@ -1116,6 +1116,198 @@ static void test_mem_hook_arm_exclusive_store(void)
     OK(uc_close(uc));
 }
 
+static uint8_t alias_backing[0x1000];
+
+static uc_engine *open_alias_engine(uint32_t target_perms, uint32_t alias_perms)
+{
+    uc_engine *uc;
+
+    memset(alias_backing, 0, sizeof(alias_backing));
+    OK(uc_open(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS, &uc));
+    OK(uc_mem_map_ptr(uc, 0x20000000, 0x1000, target_perms, alias_backing));
+    OK(uc_mem_map_alias(uc, 0x0a000000, 0x1000, alias_perms, 0x20000000));
+    return uc;
+}
+
+static void test_mem_alias_shares_storage(void)
+{
+    uc_engine *uc = open_alias_engine(UC_PROT_ALL, UC_PROT_ALL);
+    uint32_t value = 0x12345678, read = 0;
+
+    OK(uc_mem_write(uc, 0x0a000010, &value, sizeof(value)));
+    OK(uc_mem_read(uc, 0x20000010, &read, sizeof(read)));
+    TEST_CHECK(read == 0x12345678);
+    TEST_CHECK(memcmp(alias_backing + 0x10, &value, sizeof(value)) == 0);
+
+    value = 0x9abcdef0;
+    OK(uc_mem_write(uc, 0x20000ffc, &value, sizeof(value)));
+    OK(uc_mem_read(uc, 0x0a000ffc, &read, sizeof(read)));
+    TEST_CHECK(read == 0x9abcdef0);
+
+    OK(uc_close(uc));
+}
+
+static void test_mem_alias_perms_per_window(void)
+{
+    uc_engine *uc =
+        open_alias_engine(UC_PROT_READ | UC_PROT_WRITE, UC_PROT_READ | UC_PROT_EXEC);
+    const char code[] = "\x08\x60\x00\xbf";
+    uint32_t r0 = 0x55, r1, stored = 0;
+
+    OK(uc_mem_write(uc, 0x20000000, code, sizeof(code) - 1));
+    OK(uc_reg_write(uc, UC_ARM_REG_R0, &r0));
+
+    r1 = 0x20000100;
+    OK(uc_reg_write(uc, UC_ARM_REG_R1, &r1));
+    OK(uc_emu_start(uc, 0x0a000000 | 1, 0x0a000002, 0, 0));
+    OK(uc_mem_read(uc, 0x20000100, &stored, sizeof(stored)));
+    TEST_CHECK(stored == 0x55);
+
+    r1 = 0x0a000200;
+    OK(uc_reg_write(uc, UC_ARM_REG_R1, &r1));
+    uc_assert_err(UC_ERR_WRITE_PROT,
+                  uc_emu_start(uc, 0x0a000000 | 1, 0x0a000002, 0, 0));
+    stored = 0;
+    OK(uc_mem_read(uc, 0x20000200, &stored, sizeof(stored)));
+    TEST_CHECK(stored == 0);
+
+    uc_assert_err(UC_ERR_FETCH_PROT,
+                  uc_emu_start(uc, 0x20000000 | 1, 0x20000002, 0, 0));
+
+    OK(uc_close(uc));
+}
+
+static void test_mem_alias_store_invalidates_other_window(void)
+{
+    uc_engine *uc =
+        open_alias_engine(UC_PROT_READ | UC_PROT_WRITE, UC_PROT_READ | UC_PROT_EXEC);
+    const char code[] = "\x01\x33\x00\xe0\x00\xbf\x01\x20\x02\x2b\x02\xd0"
+                        "\xff\xe7\x0a\x80\xf6\xe7\xfe\xe7";
+    uint32_t r0 = 0, r1 = 0x20000006, r2 = 0x2002, r3 = 0;
+
+    OK(uc_mem_write(uc, 0x20000000, code, sizeof(code) - 1));
+    OK(uc_reg_write(uc, UC_ARM_REG_R0, &r0));
+    OK(uc_reg_write(uc, UC_ARM_REG_R1, &r1));
+    OK(uc_reg_write(uc, UC_ARM_REG_R2, &r2));
+    OK(uc_reg_write(uc, UC_ARM_REG_R3, &r3));
+    OK(uc_emu_start(uc, 0x0a000000 | 1, 0x0a000012, 0, 100));
+
+    OK(uc_reg_read(uc, UC_ARM_REG_R0, &r0));
+    OK(uc_reg_read(uc, UC_ARM_REG_R3, &r3));
+    TEST_CHECK(r3 == 2);
+    TEST_CHECK(r0 == 2);
+
+    OK(uc_close(uc));
+}
+
+static void run_patched_twice_through_execute_never(uint64_t target,
+                                                    uint32_t target_perms,
+                                                    uint64_t alias,
+                                                    uint32_t alias_perms)
+{
+    uc_engine *uc;
+    const char code[] = "\x00\xf0\x0a\xf8\x05\x46\x0a\x80\x00\xf0\x06\xf8"
+                        "\x06\x46\x0b\x80\x00\xf0\x02\xf8\x07\x46\xfe\xe7"
+                        "\x01\x20\x70\x47";
+    uint32_t r1 = 0xa0000018, r2 = 0x2002, r3 = 0x2003, r5 = 0, r6 = 0, r7 = 0;
+
+    memset(alias_backing, 0, sizeof(alias_backing));
+    OK(uc_open(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS, &uc));
+    OK(uc_mem_map_ptr(uc, target, 0x1000, target_perms, alias_backing));
+    OK(uc_mem_map_alias(uc, alias, 0x1000, alias_perms, target));
+    OK(uc_mem_write(uc, 0x20000000, code, sizeof(code) - 1));
+    OK(uc_reg_write(uc, UC_ARM_REG_R1, &r1));
+    OK(uc_reg_write(uc, UC_ARM_REG_R2, &r2));
+    OK(uc_reg_write(uc, UC_ARM_REG_R3, &r3));
+    OK(uc_emu_start(uc, 0x20000000 | 1, 0x20000016, 0, 100));
+
+    OK(uc_reg_read(uc, UC_ARM_REG_R5, &r5));
+    OK(uc_reg_read(uc, UC_ARM_REG_R6, &r6));
+    OK(uc_reg_read(uc, UC_ARM_REG_R7, &r7));
+    TEST_CHECK(r5 == 1);
+    TEST_CHECK(r6 == 2);
+    TEST_CHECK(r7 == 3);
+    TEST_MSG("r5 %u r6 %u r7 %u", r5, r6, r7);
+
+    OK(uc_close(uc));
+}
+
+static void test_mem_alias_execute_never_window_keeps_invalidating(void)
+{
+    run_patched_twice_through_execute_never(0x20000000, UC_PROT_ALL, 0xa0000000,
+                                            UC_PROT_READ | UC_PROT_WRITE);
+    run_patched_twice_through_execute_never(
+        0xa0000000, UC_PROT_READ | UC_PROT_WRITE, 0x20000000, UC_PROT_ALL);
+}
+
+static void test_mem_alias_unmap_order(void)
+{
+    uc_engine *uc = open_alias_engine(UC_PROT_ALL, UC_PROT_ALL);
+
+    uc_assert_err(UC_ERR_ARG, uc_mem_unmap(uc, 0x20000000, 0x1000));
+    uc_assert_err(UC_ERR_ARG, uc_mem_unmap(uc, 0x0a000000, 0x400));
+    OK(uc_mem_unmap(uc, 0x0a000000, 0x1000));
+    OK(uc_mem_unmap(uc, 0x20000000, 0x1000));
+
+    OK(uc_close(uc));
+}
+
+static void test_mem_alias_protect_and_snapshot_refused(void)
+{
+    uc_engine *uc = open_alias_engine(UC_PROT_ALL, UC_PROT_ALL);
+    uc_context *context;
+
+    uc_assert_err(UC_ERR_ARG, uc_mem_protect(uc, 0x0a000000, 0x1000,
+                                             UC_PROT_READ));
+    uc_assert_err(UC_ERR_ARG, uc_mem_protect(uc, 0x20000000, 0x1000,
+                                             UC_PROT_READ));
+
+    OK(uc_ctl_context_mode(uc, UC_CTL_CONTEXT_MEMORY));
+    OK(uc_context_alloc(uc, &context));
+    uc_assert_err(UC_ERR_ARG, uc_context_save(uc, context));
+    OK(uc_context_free(context));
+
+    OK(uc_close(uc));
+}
+
+static void test_mem_alias_listed_by_regions(void)
+{
+    uc_engine *uc = open_alias_engine(UC_PROT_READ | UC_PROT_WRITE,
+                                      UC_PROT_READ | UC_PROT_EXEC);
+    uc_mem_region *regions;
+    uint32_t count = 0;
+
+    OK(uc_mem_regions(uc, &regions, &count));
+    TEST_CHECK(count == 2);
+    TEST_CHECK(regions[0].begin == 0x0a000000);
+    TEST_CHECK(regions[0].end == 0x0a000fff);
+    TEST_CHECK(regions[0].perms == (UC_PROT_READ | UC_PROT_EXEC));
+    TEST_CHECK(regions[1].begin == 0x20000000);
+    TEST_CHECK(regions[1].perms == (UC_PROT_READ | UC_PROT_WRITE));
+    OK(uc_free(regions));
+
+    OK(uc_close(uc));
+}
+
+static void test_mem_alias_refuses_partial(void)
+{
+    uc_engine *uc;
+
+    OK(uc_open(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS, &uc));
+    OK(uc_mem_map_ptr(uc, 0x20000000, 0x2000, UC_PROT_ALL, alias_backing));
+    uc_assert_err(UC_ERR_ARG, uc_mem_map_alias(uc, 0x0a000000, 0x1000,
+                                               UC_PROT_ALL, 0x20000000));
+    uc_assert_err(UC_ERR_ARG, uc_mem_map_alias(uc, 0x0a000000, 0x1000,
+                                               UC_PROT_ALL, 0x20001000));
+    uc_assert_err(UC_ERR_ARG, uc_mem_map_alias(uc, 0x0a000000, 0x2000,
+                                               UC_PROT_ALL, 0x30000000));
+    OK(uc_mem_map_alias(uc, 0x0a000000, 0x2000, UC_PROT_ALL, 0x20000000));
+    uc_assert_err(UC_ERR_ARG, uc_mem_map_alias(uc, 0x0e000000, 0x2000,
+                                               UC_PROT_ALL, 0x0a000000));
+
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_map_correct", test_map_correct},
              {"test_map_wrapping", test_map_wrapping},
              {"test_mem_protect", test_mem_protect},
@@ -1156,4 +1348,17 @@ TEST_LIST = {{"test_map_correct", test_map_correct},
               test_mem_hook_deleted_in_its_callback},
              {"test_mem_hook_arm_exclusive_store",
               test_mem_hook_arm_exclusive_store},
+             {"test_mem_alias_shares_storage", test_mem_alias_shares_storage},
+             {"test_mem_alias_perms_per_window",
+              test_mem_alias_perms_per_window},
+             {"test_mem_alias_store_invalidates_other_window",
+              test_mem_alias_store_invalidates_other_window},
+             {"test_mem_alias_execute_never_window_keeps_invalidating",
+              test_mem_alias_execute_never_window_keeps_invalidating},
+             {"test_mem_alias_unmap_order", test_mem_alias_unmap_order},
+             {"test_mem_alias_protect_and_snapshot_refused",
+              test_mem_alias_protect_and_snapshot_refused},
+             {"test_mem_alias_listed_by_regions",
+              test_mem_alias_listed_by_regions},
+             {"test_mem_alias_refuses_partial", test_mem_alias_refuses_partial},
              {NULL, NULL}};

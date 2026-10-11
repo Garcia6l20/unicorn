@@ -126,6 +126,7 @@
 #define memory_map memory_map_ppc
 #define memory_map_io memory_map_io_ppc
 #define memory_map_ptr memory_map_ptr_ppc
+#define memory_map_alias memory_map_alias_ppc
 #define memory_cow memory_cow_ppc
 #define memory_unmap memory_unmap_ppc
 #define memory_moveout memory_moveout_ppc

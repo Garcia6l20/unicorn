@@ -126,6 +126,7 @@ cpu_inl \
 memory_map \
 memory_map_io \
 memory_map_ptr \
+memory_map_alias \
 memory_cow \
 memory_unmap \
 memory_moveout \

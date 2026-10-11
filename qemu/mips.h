@@ -126,6 +126,7 @@
 #define memory_map memory_map_mips
 #define memory_map_io memory_map_io_mips
 #define memory_map_ptr memory_map_ptr_mips
+#define memory_map_alias memory_map_alias_mips
 #define memory_cow memory_cow_mips
 #define memory_unmap memory_unmap_mips
 #define memory_moveout memory_moveout_mips
