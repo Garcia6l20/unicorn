@@ -403,6 +403,7 @@ struct uc_struct {
     bool exit_after_insn;
     uint64_t exit_after_insn_taken;
     uint32_t mem_alias_count;
+    uint64_t slow_path_ram_accesses;
 
     int use_exits;
     uint64_t exits[UC_MAX_NESTED_LEVEL]; // When multiple exits is not enabled.

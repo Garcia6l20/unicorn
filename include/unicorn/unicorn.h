@@ -694,6 +694,7 @@ typedef enum uc_control_type {
     // Write: no arguments
     // Read: @args = (uint64_t*)
     UC_CTL_UC_EXIT_AFTER_INSN,
+    UC_CTL_UC_SLOW_PATH_COUNT,
 } uc_control_type;
 
 /*
@@ -796,6 +797,10 @@ See sample_ctl.c for a detailed example.
     uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_EXIT_AFTER_INSN, 0))
 #define uc_ctl_exit_after_insn_taken(uc, ptr)                                  \
     uc_ctl(uc, UC_CTL_READ(UC_CTL_UC_EXIT_AFTER_INSN, 1), (ptr))
+#define uc_ctl_slow_path_count(uc, ptr)                                        \
+    uc_ctl(uc, UC_CTL_READ(UC_CTL_UC_SLOW_PATH_COUNT, 1), (ptr))
+#define uc_ctl_slow_path_count_reset(uc)                                       \
+    uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_SLOW_PATH_COUNT, 0))
 
 // Opaque storage for CPU context, used with uc_context_*()
 struct uc_context;

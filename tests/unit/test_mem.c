@@ -1308,6 +1308,63 @@ static void test_mem_alias_refuses_partial(void)
     OK(uc_close(uc));
 }
 
+static uint64_t slow_path_accesses_of_loop(uc_engine *uc, uint32_t iterations)
+{
+    uint64_t count = 0;
+
+    run_page_hook_loop(uc, iterations);
+    OK(uc_ctl_slow_path_count_reset(uc));
+    run_page_hook_loop(uc, iterations);
+    OK(uc_ctl_slow_path_count(uc, &count));
+    return count;
+}
+
+static void test_mem_slow_path_only_on_hooked_pages(void)
+{
+    uc_engine *uc = open_page_hook_engine();
+    uc_hook read_hook, write_hook, unbounded;
+    page_hook_state state = {0};
+
+    TEST_CHECK(slow_path_accesses_of_loop(uc, 5) == 0);
+
+    OK(uc_hook_add(uc, &read_hook, UC_HOOK_MEM_READ, page_hook_read_cb,
+                   &state, 0x2000, 0x2fff));
+    OK(uc_hook_add(uc, &write_hook, UC_HOOK_MEM_WRITE, page_hook_write_cb,
+                   &state, 0x2000, 0x2fff));
+    TEST_CHECK(slow_path_accesses_of_loop(uc, 5) == 10);
+
+    OK(uc_hook_del(uc, read_hook));
+    OK(uc_hook_del(uc, write_hook));
+    TEST_CHECK(slow_path_accesses_of_loop(uc, 5) == 0);
+
+    OK(uc_hook_add(uc, &unbounded, UC_HOOK_MEM_WRITE, page_hook_write_cb,
+                   &state, 1, 0));
+    TEST_CHECK(slow_path_accesses_of_loop(uc, 5) == 10);
+
+    OK(uc_close(uc));
+}
+
+static void test_mem_slow_path_deleted_mid_run(void)
+{
+    uc_engine *uc = open_page_hook_engine();
+    uc_hook code_hook;
+    page_hook_state state = {0};
+    uint64_t count = 0;
+
+    OK(uc_hook_add(uc, &code_hook, UC_HOOK_CODE, page_hook_dec_cb, &state,
+                   0x100f, 0x100f));
+    run_page_hook_loop(uc, 6);
+    TEST_CHECK(state.writes == 2);
+    OK(uc_hook_del(uc, code_hook));
+    OK(uc_ctl_slow_path_count_reset(uc));
+    run_page_hook_loop(uc, 6);
+    OK(uc_ctl_slow_path_count(uc, &count));
+    TEST_CHECK(state.writes == 2);
+    TEST_CHECK(count == 0);
+
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_map_correct", test_map_correct},
              {"test_map_wrapping", test_map_wrapping},
              {"test_mem_protect", test_mem_protect},
@@ -1361,4 +1418,8 @@ TEST_LIST = {{"test_map_correct", test_map_correct},
              {"test_mem_alias_listed_by_regions",
               test_mem_alias_listed_by_regions},
              {"test_mem_alias_refuses_partial", test_mem_alias_refuses_partial},
+             {"test_mem_slow_path_only_on_hooked_pages",
+              test_mem_slow_path_only_on_hooked_pages},
+             {"test_mem_slow_path_deleted_mid_run",
+              test_mem_slow_path_deleted_mid_run},
              {NULL, NULL}};

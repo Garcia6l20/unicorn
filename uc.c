@@ -3307,6 +3307,17 @@ uc_err uc_ctl(uc_engine *uc, uc_control_type control, ...)
         break;
     }
 
+    case UC_CTL_UC_SLOW_PATH_COUNT:
+        if (rw == UC_CTL_IO_READ) {
+            uint64_t *count = va_arg(args, uint64_t *);
+            *count = uc->slow_path_ram_accesses;
+        } else if (rw == UC_CTL_IO_WRITE) {
+            uc->slow_path_ram_accesses = 0;
+        } else {
+            err = UC_ERR_ARG;
+        }
+        break;
+
     default:
         err = UC_ERR_ARG;
         break;

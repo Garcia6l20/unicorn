@@ -1641,6 +1641,9 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
 
     paddr = entry->paddr | (addr & ~TARGET_PAGE_MASK);
     mr = uc->memory_mapping(uc, paddr);
+    if (!code_read && mr != NULL && memory_region_is_ram(mr)) {
+        uc->slow_path_ram_accesses++;
+    }
 
     // memory might be still unmapped while reading or fetching
     if (mr == NULL) {
@@ -2269,6 +2272,9 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
     // Load the latest memory mapping.
     paddr = entry->paddr | (addr & ~TARGET_PAGE_MASK);
     mr = uc->memory_mapping(uc, paddr);
+    if (mr != NULL && memory_region_is_ram(mr)) {
+        uc->slow_path_ram_accesses++;
+    }
 
     if (!uc->size_recur_mem) { // disabling write callback if in recursive call
         // Unicorn: callback on memory write
