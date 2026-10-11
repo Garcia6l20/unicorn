@@ -824,6 +824,40 @@ static void test_mem_write_prot_drop_store_scope(void)
     free(backing);
 }
 
+static void test_mem_write_hook_flush_tlb_cb(uc_engine *uc, uc_mem_type type,
+                                             uint64_t address, int size,
+                                             int64_t value, void *user_data)
+{
+    int *calls = (int *)user_data;
+    (*calls)++;
+    OK(uc_ctl_flush_tlb(uc));
+}
+
+static void test_mem_write_hook_flush_tlb(void)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    int calls = 0;
+    uint32_t mem[2] = {0, 0};
+    char code[] = "\xc7\x05\x00\x20\x00\x00\x78\x56\x34\x12"
+                  "\xc7\x05\x04\x20\x00\x00\xf0\xde\xbc\x9a";
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_32, &uc));
+    OK(uc_mem_map(uc, 0x1000, 0x1000, UC_PROT_ALL));
+    OK(uc_mem_map(uc, 0x2000, 0x1000, UC_PROT_READ | UC_PROT_WRITE));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code) - 1));
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_WRITE,
+                   test_mem_write_hook_flush_tlb_cb, &calls, 0x2000, 0x2007));
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code) - 1, 0, 0));
+
+    OK(uc_mem_read(uc, 0x2000, mem, sizeof(mem)));
+    TEST_CHECK(calls == 2);
+    TEST_CHECK(mem[0] == 0x12345678);
+    TEST_CHECK(mem[1] == 0x9abcdef0);
+
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_map_correct", test_map_correct},
              {"test_map_wrapping", test_map_wrapping},
              {"test_mem_protect", test_mem_protect},
@@ -851,4 +885,5 @@ TEST_LIST = {{"test_map_correct", test_map_correct},
               test_mem_write_prot_handled_commits},
              {"test_mem_write_prot_drop_store_scope",
               test_mem_write_prot_drop_store_scope},
+             {"test_mem_write_hook_flush_tlb", test_mem_write_hook_flush_tlb},
              {NULL, NULL}};

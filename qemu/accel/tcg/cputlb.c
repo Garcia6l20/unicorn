@@ -2251,6 +2251,14 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
                 break;
         }
         tlb_hook_state_restore(env, &hook_state);
+
+        if (tlb_entry_is_empty(entry)) {
+            tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE,
+                     mmu_idx, retaddr);
+            index = tlb_index(env, mmu_idx, addr);
+            entry = tlb_entry(env, mmu_idx, addr);
+            tlb_addr = tlb_addr_write(entry) & ~TLB_INVALID_MASK;
+        }
     }
 
     // Unicorn: callback on invalid memory
