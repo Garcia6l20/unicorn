@@ -1212,6 +1212,14 @@ void v8m_security_lookup(CPUARMState *env, uint32_t address,
  */
 void switch_v7m_security_state(CPUARMState *env, bool new_secstate);
 
+/**
+ * @brief Write CONTROL.SPSEL of the @p secstate bank, swapping the active
+ * stack pointer when the bank is the current state's and the write changes
+ * the stack in use.
+ */
+void write_v7m_control_spsel_for_secstate(CPUARMState *env, bool new_spsel,
+                                          bool secstate);
+
 bool pmsav8_mpu_lookup(CPUARMState *env, uint32_t address,
                        MMUAccessType access_type, ARMMMUIdx mmu_idx,
                        hwaddr *phys_ptr, MemTxAttrs *txattrs,

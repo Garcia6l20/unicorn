@@ -199,7 +199,25 @@ module Arm =
     let UC_ARM_REG_CPACR_NS = 149
     let UC_ARM_REG_FPCCR_S = 150
     let UC_ARM_REG_FPCCR_NS = 151
-    let UC_ARM_REG_ENDING = 152
+    let UC_ARM_REG_MSP_S = 152
+    let UC_ARM_REG_MSP_NS = 153
+    let UC_ARM_REG_PSP_S = 154
+    let UC_ARM_REG_PSP_NS = 155
+    let UC_ARM_REG_CONTROL_S = 156
+    let UC_ARM_REG_CONTROL_NS = 157
+    let UC_ARM_REG_PRIMASK_S = 158
+    let UC_ARM_REG_PRIMASK_NS = 159
+    let UC_ARM_REG_BASEPRI_S = 160
+    let UC_ARM_REG_BASEPRI_NS = 161
+    let UC_ARM_REG_FAULTMASK_S = 162
+    let UC_ARM_REG_FAULTMASK_NS = 163
+    let UC_ARM_REG_MSPLIM_S = 164
+    let UC_ARM_REG_MSPLIM_NS = 165
+    let UC_ARM_REG_PSPLIM_S = 166
+    let UC_ARM_REG_PSPLIM_NS = 167
+    let UC_ARM_REG_FAULT_STATUS = 168
+    let UC_ARM_REG_FAULT_ADDRESS = 169
+    let UC_ARM_REG_ENDING = 170
 
     // alias registers
     let UC_ARM_REG_R13 = 12
@@ -213,4 +231,6 @@ module Arm =
     let UC_ARM_INS_INVALID = 0
     let UC_ARM_INS_WFI = 1
     let UC_ARM_INS_ENDING = 2
+    let UC_ARM_FAULT_NSC_EXEC = 15
+    let UC_ARM_FAULT_SECURE = 14
 
