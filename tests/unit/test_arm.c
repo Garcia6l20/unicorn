@@ -2628,6 +2628,356 @@ static void test_arm_v8m_fault_status(void)
     OK(uc_close(uc));
 }
 
+#define V8M_MMIO 0x40000000
+#define V8M_SAU_ALLNS 2
+
+typedef struct _V8M_MMIO_LOG {
+    int reads;
+    int writes;
+    uint64_t offset;
+    uint64_t value;
+    unsigned size;
+    uint64_t write_offset;
+    unsigned write_size;
+    uc_mem_attrs read;
+    uc_mem_attrs write;
+    int secure_writes;
+    int switch_at;
+    bool stop;
+    bool precise;
+} V8M_MMIO_LOG;
+
+static uint64_t test_arm_v8m_mmio_read(uc_engine *uc, uint64_t offset,
+                                       unsigned size, uc_mem_attrs attrs,
+                                       void *user_data)
+{
+    V8M_MMIO_LOG *log = user_data;
+
+    log->reads++;
+    log->offset = offset;
+    log->size = size;
+    log->read = attrs;
+    return 0x5a5a0000 | offset;
+}
+
+static void test_arm_v8m_mmio_write(uc_engine *uc, uint64_t offset,
+                                    unsigned size, uint64_t value,
+                                    uc_mem_attrs attrs, void *user_data)
+{
+    V8M_MMIO_LOG *log = user_data;
+
+    log->writes++;
+    log->offset = offset;
+    log->size = size;
+    log->write_offset = offset;
+    log->write_size = size;
+    log->value = value;
+    log->write = attrs;
+    if (attrs.secure) {
+        log->secure_writes++;
+    }
+    if (log->writes == log->switch_at) {
+        test_arm_v8m_reg(uc, UC_ARM_REG_SECURE, 0);
+        if (log->stop) {
+            OK(uc_emu_stop(uc));
+        }
+        if (log->precise) {
+            OK(uc_ctl_exit_after_insn(uc));
+        }
+    }
+}
+
+static uc_engine *test_arm_v8m_mmio_open(const char *code, uint64_t size,
+                                         V8M_RUN *run, V8M_MMIO_LOG *log)
+{
+    uc_engine *uc = test_arm_v8m_open(code, size, run);
+
+    memset(log, 0, sizeof(*log));
+    OK(uc_mmio_map_attrs(uc, V8M_MMIO, 0x1000, test_arm_v8m_mmio_read, log,
+                         test_arm_v8m_mmio_write, log));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0x11223344);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, V8M_MMIO + 0x24);
+    return uc;
+}
+
+static void test_arm_v8m_mmio_access(uc_engine *uc, V8M_RUN *run,
+                                     V8M_MMIO_LOG *log)
+{
+    log->reads = 0;
+    log->writes = 0;
+    log->read = (uc_mem_attrs){!log->read.secure, !log->read.privileged};
+    log->write = (uc_mem_attrs){!log->write.secure, !log->write.privileged};
+    test_arm_v8m_run(uc, run, code_start, code_start + 4);
+    TEST_CHECK(run->intno == -1);
+    TEST_CHECK(log->writes == 1);
+    TEST_CHECK(log->reads == 1);
+}
+
+static void test_arm_v8m_mmio_attrs(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    V8M_MMIO_LOG log;
+    char code[] = "\x11\x60\x10\x68";
+    uint32_t word = 0;
+
+    uc = test_arm_v8m_mmio_open(code, sizeof(code) - 1, &run, &log);
+    test_arm_v8m_mmio_access(uc, &run, &log);
+    TEST_CHECK(log.write.secure && log.write.privileged);
+    TEST_CHECK(log.read.secure && log.read.privileged);
+    TEST_CHECK(log.value == 0x11223344);
+    TEST_CHECK(log.write_offset == 0x24);
+    TEST_CHECK(log.write_size == 4);
+    TEST_CHECK(log.offset == 0x24);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == 0x5a5a0024);
+
+    test_arm_v8m_reg(uc, UC_ARM_REG_CONTROL, 1);
+    test_arm_v8m_mmio_access(uc, &run, &log);
+    TEST_CHECK(log.write.secure && !log.write.privileged);
+    TEST_CHECK(log.read.secure && !log.read.privileged);
+
+    OK(uc_mem_read(uc, V8M_MMIO + 0x30, &word, sizeof(word)));
+    TEST_CHECK(word == 0x5a5a0030);
+    TEST_CHECK(!log.read.secure && log.read.privileged);
+    OK(uc_mem_write(uc, V8M_MMIO + 0x34, &word, sizeof(word)));
+    TEST_CHECK(!log.write.secure && log.write.privileged);
+
+    OK(uc_mem_read_attrs(uc, V8M_MMIO + 0x38, &word, sizeof(word),
+                         (uc_mem_attrs){true, false}));
+    TEST_CHECK(word == 0x5a5a0038);
+    TEST_CHECK(log.read.secure && !log.read.privileged);
+    OK(uc_mem_write_attrs(uc, V8M_MMIO + 0x3c, &word, sizeof(word),
+                          (uc_mem_attrs){true, false}));
+    TEST_CHECK(log.write.secure && !log.write.privileged);
+    TEST_CHECK(log.write_offset == 0x3c && log.value == 0x5a5a0038);
+    OK(uc_close(uc));
+
+    uc = test_arm_v8m_mmio_open(code, sizeof(code) - 1, &run, &log);
+    OK(uc_ctl_arm_security(uc, 1));
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_CTRL, V8M_SAU_ALLNS);
+    test_arm_v8m_reg(uc, UC_ARM_REG_SECURE, 0);
+    test_arm_v8m_mmio_access(uc, &run, &log);
+    TEST_CHECK(!log.write.secure && log.write.privileged);
+    TEST_CHECK(!log.read.secure && log.read.privileged);
+    OK(uc_close(uc));
+}
+
+static void test_arm_v8m_mmio_attrs_sau(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    V8M_MMIO_LOG log;
+    char code[] = "\x11\x60\x10\x68";
+
+    uc = test_arm_v8m_mmio_open(code, sizeof(code) - 1, &run, &log);
+    OK(uc_ctl_arm_security(uc, 1));
+    test_arm_v8m_mmio_access(uc, &run, &log);
+    TEST_CHECK(log.write.secure && log.read.secure);
+
+    test_arm_v8m_sau_region(uc, 0, V8M_MMIO,
+                            (V8M_MMIO + 0x3e0) | V8M_SAU_ENABLE);
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_CTRL, V8M_SAU_ENABLE);
+    test_arm_v8m_mmio_access(uc, &run, &log);
+    TEST_CHECK(!log.write.secure && !log.read.secure);
+    TEST_CHECK(log.write.privileged && log.read.privileged);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_SECURE) == 1);
+    OK(uc_close(uc));
+}
+
+static void test_arm_v8m_exempt_idau(void *user, uint32_t address, int *region,
+                                     bool *exempt, bool *ns, bool *nsc)
+{
+    if (address < code_start + 0x400 ||
+        (address >= V8M_MMIO && address < V8M_MMIO + 0x400)) {
+        *exempt = true;
+    }
+}
+
+static uc_engine *test_arm_v8m_mmio_loop_open(const char *code, uint64_t size,
+                                              V8M_RUN *run, V8M_MMIO_LOG *log,
+                                              bool stop, bool precise)
+{
+    uc_engine *uc = test_arm_v8m_mmio_open(code, size, run, log);
+
+    OK(uc_ctl_arm_security(uc, 1));
+    OK(uc_ctl_arm_idau(uc, test_arm_v8m_exempt_idau, NULL));
+    if (precise) {
+        OK(uc_ctl_exit_after_insn_enable(uc));
+    }
+    log->switch_at = 10;
+    log->stop = stop;
+    log->precise = precise;
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, V8M_LOOP_COUNT);
+    return uc;
+}
+
+static void test_arm_v8m_mmio_attrs_chained(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    V8M_MMIO_LOG log;
+    char code[] = "\x10\x60\x01\x3b\xfc\xd1\x00\xbf";
+
+    uc = test_arm_v8m_mmio_loop_open(code, sizeof(code) - 1, &run, &log, false,
+                                     false);
+    test_arm_v8m_loop_run(uc, &run, code_start, 3);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(log.writes == V8M_LOOP_COUNT);
+    TEST_CHECK(log.secure_writes == V8M_LOOP_COUNT);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_SECURE) == 0);
+    TEST_MSG("writes %d secure %d", log.writes, log.secure_writes);
+    OK(uc_close(uc));
+
+    uc = test_arm_v8m_mmio_loop_open(code, sizeof(code) - 1, &run, &log, true,
+                                     false);
+    test_arm_v8m_loop_run(uc, &run, code_start, 3);
+    TEST_CHECK(log.writes == 10);
+    test_arm_v8m_loop_run(uc, &run, test_arm_v8m_get(uc, UC_ARM_REG_PC), 3);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(log.writes == V8M_LOOP_COUNT + 1);
+    TEST_CHECK(log.secure_writes == 10);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) == 0);
+    TEST_MSG("uc_emu_stop repeats the store: writes %d secure %d", log.writes,
+             log.secure_writes);
+    OK(uc_close(uc));
+
+    uc = test_arm_v8m_mmio_loop_open(code, sizeof(code) - 1, &run, &log, false,
+                                     true);
+    test_arm_v8m_loop_run(uc, &run, code_start, 3);
+    TEST_CHECK(log.writes == 10);
+    test_arm_v8m_loop_run(uc, &run, test_arm_v8m_get(uc, UC_ARM_REG_PC), 3);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(log.writes == V8M_LOOP_COUNT);
+    TEST_CHECK(log.secure_writes == 10);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) == 0);
+    TEST_MSG("writes %d secure %d", log.writes, log.secure_writes);
+    OK(uc_close(uc));
+}
+
+static void test_arm_mmio_attrs_no_security(void)
+{
+    uc_cpu_arm models[] = {UC_CPU_ARM_CORTEX_M0, UC_CPU_ARM_CORTEX_M3,
+                           UC_CPU_ARM_CORTEX_M4, UC_CPU_ARM_CORTEX_M7};
+    char code[] = "\x11\x60\x10\x68";
+    uc_engine *uc;
+    uc_hook hook;
+    V8M_RUN run;
+    V8M_MMIO_LOG log;
+    size_t i;
+
+    for (i = 0; i < sizeof(models) / sizeof(models[0]); i++) {
+        uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB, code, sizeof(code) - 1,
+                        models[i]);
+        OK(uc_hook_add(uc, &hook, UC_HOOK_INTR, test_arm_v8m_intr, &run, 1, 0));
+        memset(&log, 0, sizeof(log));
+        OK(uc_mmio_map_attrs(uc, V8M_MMIO, 0x1000, test_arm_v8m_mmio_read, &log,
+                             test_arm_v8m_mmio_write, &log));
+        test_arm_v8m_reg(uc, UC_ARM_REG_R2, V8M_MMIO + 0x24);
+        test_arm_v8m_mmio_access(uc, &run, &log);
+        TEST_CHECK(!log.write.secure && !log.read.secure);
+        TEST_CHECK(log.write.privileged && log.read.privileged);
+        TEST_MSG("model %d", (int)models[i]);
+        OK(uc_close(uc));
+    }
+}
+
+typedef struct _V8M_PLAIN_LOG {
+    int reads;
+    int writes;
+    uint64_t offset;
+    uint64_t value;
+    unsigned size;
+    uint64_t write_offset;
+    unsigned write_size;
+} V8M_PLAIN_LOG;
+
+static uint64_t test_arm_mmio_plain_read(uc_engine *uc, uint64_t offset,
+                                         unsigned size, void *user_data)
+{
+    V8M_PLAIN_LOG *log = user_data;
+
+    log->reads++;
+    log->offset = offset;
+    log->size = size;
+    return 0x5a5a0000 | offset;
+}
+
+static void test_arm_mmio_plain_write(uc_engine *uc, uint64_t offset,
+                                      unsigned size, uint64_t value,
+                                      void *user_data)
+{
+    V8M_PLAIN_LOG *log = user_data;
+
+    log->writes++;
+    log->offset = offset;
+    log->size = size;
+    log->write_offset = offset;
+    log->write_size = size;
+    log->value = value;
+}
+
+static void test_arm_mmio_plain_unchanged(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    V8M_PLAIN_LOG log = {0};
+    char code[] = "\x11\x80\x10\x68";
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    OK(uc_mmio_map(uc, V8M_MMIO, 0x1000, test_arm_mmio_plain_read, &log,
+                   test_arm_mmio_plain_write, &log));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0x11223344);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, V8M_MMIO + 0x24);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 4);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(log.writes == 1);
+    TEST_CHECK(log.reads == 1);
+    TEST_CHECK(log.value == 0x3344);
+    TEST_CHECK(log.write_offset == 0x24);
+    TEST_CHECK(log.write_size == 2);
+    TEST_CHECK(log.offset == 0x24);
+    TEST_CHECK(log.size == 4);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == 0x5a5a0024);
+    OK(uc_close(uc));
+}
+
+static void test_arm_mmio_attrs_split(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    V8M_MMIO_LOG log;
+    char code[] = "\x11\x60\x10\x68";
+    uint32_t base;
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    memset(&log, 0, sizeof(log));
+    OK(uc_mmio_map_attrs(uc, V8M_MMIO, 0x3000, test_arm_v8m_mmio_read, &log,
+                         test_arm_v8m_mmio_write, &log));
+    OK(uc_mem_protect(uc, V8M_MMIO + 0x1000, 0x1000, UC_PROT_READ));
+    for (base = V8M_MMIO; base < V8M_MMIO + 0x3000; base += 0x2000) {
+        test_arm_v8m_reg(uc, UC_ARM_REG_R2, base + 0x10);
+        test_arm_v8m_mmio_access(uc, &run, &log);
+        TEST_CHECK(log.write_offset == 0x10);
+        TEST_CHECK(log.offset == 0x10);
+        TEST_CHECK(log.write.secure && log.read.secure);
+    }
+
+    log.reads = 0;
+    log.writes = 0;
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, V8M_MMIO + 0x1010);
+    test_arm_v8m_run(uc, &run, code_start + 2, code_start + 4);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(log.reads == 1);
+    TEST_CHECK(log.offset == 0x10);
+    TEST_CHECK(log.read.secure && log.read.privileged);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == 0x5a5a0010);
+    run.intno = -1;
+    TEST_CHECK(uc_emu_start(uc, code_start | 1, code_start + 2, 0,
+                            V8M_STEP_BOUND) != UC_ERR_OK);
+    TEST_CHECK(log.writes == 0);
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
@@ -2723,4 +3073,12 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_v8m_banked_sp", test_arm_v8m_banked_sp},
              {"test_arm_v8m_banked_special", test_arm_v8m_banked_special},
              {"test_arm_v8m_fault_status", test_arm_v8m_fault_status},
+             {"test_arm_v8m_mmio_attrs", test_arm_v8m_mmio_attrs},
+             {"test_arm_v8m_mmio_attrs_sau", test_arm_v8m_mmio_attrs_sau},
+             {"test_arm_v8m_mmio_attrs_chained",
+              test_arm_v8m_mmio_attrs_chained},
+             {"test_arm_mmio_plain_unchanged", test_arm_mmio_plain_unchanged},
+             {"test_arm_mmio_attrs_split", test_arm_mmio_attrs_split},
+             {"test_arm_mmio_attrs_no_security",
+              test_arm_mmio_attrs_no_security},
              {NULL, NULL}};

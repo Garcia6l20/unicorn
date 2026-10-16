@@ -29,6 +29,13 @@ static inline bool cpu_physical_mem_write(AddressSpace *as, hwaddr addr,
     return cpu_physical_memory_rw(as, addr, (void *)buf, len, 1);
 }
 
+static inline bool cpu_physical_mem_rw_attrs(AddressSpace *as, hwaddr addr,
+                                             uint8_t *buf, hwaddr len,
+                                             MemTxAttrs attrs, bool is_write)
+{
+    return address_space_rw(as, addr, attrs, buf, len, is_write) == MEMTX_OK;
+}
+
 static bool cpu_virtual_mem_read(struct uc_struct *uc, vaddr addr, uint32_t prot, uint8_t *buf, int len)
 {
     MMUAccessType access_type;
@@ -189,6 +196,7 @@ static inline void uc_common_init(struct uc_struct* uc)
 {
     uc->write_mem = cpu_physical_mem_write;
     uc->read_mem = cpu_physical_mem_read;
+    uc->rw_mem_attrs = cpu_physical_mem_rw_attrs;
     uc->read_mem_virtual = cpu_virtual_mem_read;
     uc->virtual_to_physical = cpu_virtual_to_physical;
     uc->tcg_exec_init = tcg_exec_init;

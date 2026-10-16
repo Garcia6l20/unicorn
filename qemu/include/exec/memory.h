@@ -34,6 +34,11 @@ typedef struct IOMMUTLBEntry IOMMUTLBEntry;
 
 typedef uint64_t (*uc_cb_mmio_read_t)(struct uc_struct *uc, uint64_t addr, unsigned size, void *user_data);
 typedef void (*uc_cb_mmio_write_t)(struct uc_struct *uc, uint64_t addr, unsigned size, uint64_t data, void *user_data);
+typedef struct uc_mem_attrs uc_mem_attrs;
+typedef uint64_t (*uc_cb_mmio_read_attrs_t)(struct uc_struct *uc, uint64_t addr, unsigned size,
+                                            uc_mem_attrs attrs, void *user_data);
+typedef void (*uc_cb_mmio_write_attrs_t)(struct uc_struct *uc, uint64_t addr, unsigned size,
+                                         uint64_t data, uc_mem_attrs attrs, void *user_data);
 
 /* See address_space_translate: bit 0 is read, bit 1 is write.  */
 typedef enum {
@@ -1218,7 +1223,9 @@ MemoryRegion *memory_map(struct uc_struct *uc, hwaddr begin, size_t size, uint32
 MemoryRegion *memory_map_ptr(struct uc_struct *uc, hwaddr begin, size_t size, uint32_t perms, void *ptr);
 MemoryRegion *memory_map_alias(struct uc_struct *uc, hwaddr begin, uint32_t perms, MemoryRegion *target);
  MemoryRegion *memory_map_io(struct uc_struct *uc, ram_addr_t begin, size_t size, uc_cb_mmio_read_t read_cb,
-                             uc_cb_mmio_write_t write_cb, void *user_data_read, void *user_data_write);
+                             uc_cb_mmio_write_t write_cb, uc_cb_mmio_read_attrs_t read_attrs_cb,
+                             uc_cb_mmio_write_attrs_t write_attrs_cb, void *user_data_read,
+                             void *user_data_write);
 MemoryRegion *memory_cow(struct uc_struct *uc, MemoryRegion *parrent, hwaddr begin, size_t size);
 void memory_unmap(struct uc_struct *uc, MemoryRegion *mr);
 void memory_moveout(struct uc_struct *uc, MemoryRegion *mr);

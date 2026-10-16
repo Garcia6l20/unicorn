@@ -176,6 +176,34 @@ static void mmio_write_wrapper(struct uc_struct *uc, void *opaque, hwaddr addr, 
     }
 }
 
+static MemTxResult mmio_read_attrs_wrapper(struct uc_struct *uc, void *opaque,
+                                           hwaddr addr, uint64_t *data,
+                                           unsigned size, MemTxAttrs attrs)
+{
+    mmio_cbs *cbs = (mmio_cbs *)opaque;
+    uc_mem_attrs bus = {attrs.secure, !attrs.user};
+
+    addr = addr & ((target_ulong)(-1));
+    *data = cbs->read_attrs ? cbs->read_attrs(uc, addr, size, bus,
+                                              cbs->user_data_read)
+                            : 0;
+    return MEMTX_OK;
+}
+
+static MemTxResult mmio_write_attrs_wrapper(struct uc_struct *uc, void *opaque,
+                                            hwaddr addr, uint64_t data,
+                                            unsigned size, MemTxAttrs attrs)
+{
+    mmio_cbs *cbs = (mmio_cbs *)opaque;
+    uc_mem_attrs bus = {attrs.secure, !attrs.user};
+
+    addr = addr & ((target_ulong)(-1));
+    if (cbs->write_attrs) {
+        cbs->write_attrs(uc, addr, size, data, bus, cbs->user_data_write);
+    }
+    return MEMTX_OK;
+}
+
 static void mmio_region_destructor_uc(MemoryRegion *mr)
 {
     g_free(mr->opaque);
@@ -183,22 +211,30 @@ static void mmio_region_destructor_uc(MemoryRegion *mr)
 
 MemoryRegion *memory_map_io(struct uc_struct *uc, ram_addr_t begin, size_t size,
                             uc_cb_mmio_read_t read_cb, uc_cb_mmio_write_t write_cb,
+                            uc_cb_mmio_read_attrs_t read_attrs_cb,
+                            uc_cb_mmio_write_attrs_t write_attrs_cb,
                             void *user_data_read, void *user_data_write)
 {
     MemoryRegion *mmio = g_new(MemoryRegion, 1);
     mmio_cbs* opaques = g_new(mmio_cbs, 1);
     MemoryRegionOps *ops = &opaques->ops;
+    bool with_attrs = read_attrs_cb || write_attrs_cb;
     opaques->read = read_cb;
     opaques->write = write_cb;
+    opaques->read_attrs = read_attrs_cb;
+    opaques->write_attrs = write_attrs_cb;
     opaques->user_data_read = user_data_read;
     opaques->user_data_write = user_data_write;
 
     memset(ops, 0, sizeof(*ops));
 
-    ops->read = mmio_read_wrapper;
-    ops->read_with_attrs = NULL;
-    ops->write = mmio_write_wrapper;
-    ops->write_with_attrs = NULL;
+    if (with_attrs) {
+        ops->read_with_attrs = mmio_read_attrs_wrapper;
+        ops->write_with_attrs = mmio_write_attrs_wrapper;
+    } else {
+        ops->read = mmio_read_wrapper;
+        ops->write = mmio_write_wrapper;
+    }
     ops->endianness = DEVICE_NATIVE_ENDIAN;
 
     memory_region_init_io(uc, mmio, ops, opaques, size);
@@ -207,10 +243,10 @@ MemoryRegion *memory_map_io(struct uc_struct *uc, ram_addr_t begin, size_t size,
 
     mmio->perms = 0;
 
-    if (read_cb)
+    if (read_cb || read_attrs_cb)
         mmio->perms |= UC_PROT_READ;
 
-    if (write_cb)
+    if (write_cb || write_attrs_cb)
         mmio->perms |= UC_PROT_WRITE;
 
     memory_region_add_subregion(uc->system_memory, begin, mmio);

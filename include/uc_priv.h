@@ -56,6 +56,8 @@ typedef struct _mmio_cbs {
     void *user_data_read;
     uc_cb_mmio_write_t write;
     void *user_data_write;
+    uc_cb_mmio_read_attrs_t read_attrs;
+    uc_cb_mmio_write_attrs_t write_attrs;
     MemoryRegionOps ops;
 } mmio_cbs;
 
@@ -79,6 +81,9 @@ typedef bool (*uc_write_mem_t)(AddressSpace *as, hwaddr addr,
 
 typedef bool (*uc_read_mem_t)(AddressSpace *as, hwaddr addr, uint8_t *buf,
                               hwaddr len);
+
+typedef bool (*uc_rw_mem_attrs_t)(AddressSpace *as, hwaddr addr, uint8_t *buf,
+                                  hwaddr len, MemTxAttrs attrs, bool is_write);
 
 typedef bool (*uc_read_mem_virtual_t)(struct uc_struct *uc, vaddr addr,
                                       uint32_t prot, uint8_t *buf, int len);
@@ -125,12 +130,12 @@ typedef void (*uc_readonly_mem_t)(MemoryRegion *mr, bool readonly);
 
 typedef int (*uc_cpus_init)(struct uc_struct *, const char *);
 
-typedef MemoryRegion *(*uc_memory_map_io_t)(struct uc_struct *uc,
-                                            ram_addr_t begin, size_t size,
-                                            uc_cb_mmio_read_t read_cb,
-                                            uc_cb_mmio_write_t write_cb,
-                                            void *user_data_read,
-                                            void *user_data_write);
+typedef MemoryRegion *(*uc_memory_map_io_t)(
+    struct uc_struct *uc, ram_addr_t begin, size_t size,
+    uc_cb_mmio_read_t read_cb, uc_cb_mmio_write_t write_cb,
+    uc_cb_mmio_read_attrs_t read_attrs_cb,
+    uc_cb_mmio_write_attrs_t write_attrs_cb, void *user_data_read,
+    void *user_data_write);
 
 // which interrupt should make emulation stop?
 typedef bool (*uc_args_int_t)(struct uc_struct *uc, int intno);
@@ -293,6 +298,7 @@ struct uc_struct {
     uc_write_mem_t write_mem;
     uc_read_mem_t read_mem;
     uc_read_mem_virtual_t read_mem_virtual;
+    uc_rw_mem_attrs_t rw_mem_attrs;
     uc_virtual_to_physical_t virtual_to_physical;
     uc_mem_cow_t memory_cow;
     uc_args_void_t release;  // release resource when uc_close()

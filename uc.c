@@ -923,8 +923,25 @@ uc_err uc_vmem_write(uc_engine *uc, uint64_t address, uc_prot prot,
     return UC_ERR_OK;
 }
 
-UNICORN_EXPORT
-uc_err uc_mem_read(uc_engine *uc, uint64_t address, void *_bytes, uint64_t size)
+static bool mem_rw(uc_engine *uc, uint64_t address, uint8_t *bytes,
+                   uint64_t len, const uc_mem_attrs *attrs, bool is_write)
+{
+    MemTxAttrs bus = {0};
+
+    if (!attrs) {
+        return is_write ? uc->write_mem(&uc->address_space_memory, address,
+                                        bytes, len)
+                        : uc->read_mem(&uc->address_space_memory, address,
+                                       bytes, len);
+    }
+    bus.secure = attrs->secure;
+    bus.user = !attrs->privileged;
+    return uc->rw_mem_attrs(&uc->address_space_memory, address, bytes, len, bus,
+                            is_write);
+}
+
+static uc_err mem_read(uc_engine *uc, uint64_t address, void *_bytes,
+                       uint64_t size, const uc_mem_attrs *attrs)
 {
     uint64_t count = 0, len;
     uint8_t *bytes = _bytes;
@@ -941,8 +958,7 @@ uc_err uc_mem_read(uc_engine *uc, uint64_t address, void *_bytes, uint64_t size)
         MemoryRegion *mr = uc->memory_mapping(uc, address);
         if (mr) {
             len = memory_region_len(uc, mr, address, size - count);
-            if (uc->read_mem(&uc->address_space_memory, address, bytes, len) ==
-                false) {
+            if (mem_rw(uc, address, bytes, len, attrs, false) == false) {
                 break;
             }
             count += len;
@@ -962,9 +978,8 @@ uc_err uc_mem_read(uc_engine *uc, uint64_t address, void *_bytes, uint64_t size)
     }
 }
 
-UNICORN_EXPORT
-uc_err uc_mem_write(uc_engine *uc, uint64_t address, const void *_bytes,
-                    uint64_t size)
+static uc_err mem_write(uc_engine *uc, uint64_t address, const void *_bytes,
+                        uint64_t size, const uc_mem_attrs *attrs)
 {
     uint64_t count = 0, len;
     const uint8_t *bytes = _bytes;
@@ -996,7 +1011,7 @@ uc_err uc_mem_write(uc_engine *uc, uint64_t address, const void *_bytes,
                     return UC_ERR_NOMEM;
                 }
             }
-            if (uc->write_mem(&uc->address_space_memory, address, bytes, len) ==
+            if (mem_rw(uc, address, (uint8_t *)bytes, len, attrs, true) ==
                 false) {
                 break;
             }
@@ -1021,6 +1036,33 @@ uc_err uc_mem_write(uc_engine *uc, uint64_t address, const void *_bytes,
         restore_jit_state(uc);
         return UC_ERR_WRITE_UNMAPPED;
     }
+}
+
+UNICORN_EXPORT
+uc_err uc_mem_read(uc_engine *uc, uint64_t address, void *_bytes, uint64_t size)
+{
+    return mem_read(uc, address, _bytes, size, NULL);
+}
+
+UNICORN_EXPORT
+uc_err uc_mem_write(uc_engine *uc, uint64_t address, const void *_bytes,
+                    uint64_t size)
+{
+    return mem_write(uc, address, _bytes, size, NULL);
+}
+
+UNICORN_EXPORT
+uc_err uc_mem_read_attrs(uc_engine *uc, uint64_t address, void *bytes,
+                         uint64_t size, uc_mem_attrs attrs)
+{
+    return mem_read(uc, address, bytes, size, &attrs);
+}
+
+UNICORN_EXPORT
+uc_err uc_mem_write_attrs(uc_engine *uc, uint64_t address, const void *bytes,
+                          uint64_t size, uc_mem_attrs attrs)
+{
+    return mem_write(uc, address, bytes, size, &attrs);
 }
 
 #define TIMEOUT_STEP 2 // microseconds
@@ -1527,10 +1569,8 @@ static void mem_alias_unlink(uc_engine *uc, MemoryRegion *mr)
     uc->mem_alias_count--;
 }
 
-UNICORN_EXPORT
-uc_err uc_mmio_map(uc_engine *uc, uint64_t address, uint64_t size,
-                   uc_cb_mmio_read_t read_cb, void *user_data_read,
-                   uc_cb_mmio_write_t write_cb, void *user_data_write)
+static uc_err mmio_map(uc_engine *uc, uint64_t address, uint64_t size,
+                       const mmio_cbs *cbs)
 {
     uc_err res;
 
@@ -1544,10 +1584,41 @@ uc_err uc_mmio_map(uc_engine *uc, uint64_t address, uint64_t size,
 
     // The callbacks do not need to be checked for NULL here, as their presence
     // (or lack thereof) will determine the permissions used.
-    res = mem_map(uc, uc->memory_map_io(uc, address, size, read_cb, write_cb,
-                                        user_data_read, user_data_write));
+    res = mem_map(uc,
+                  uc->memory_map_io(uc, address, size, cbs->read, cbs->write,
+                                    cbs->read_attrs, cbs->write_attrs,
+                                    cbs->user_data_read, cbs->user_data_write));
     restore_jit_state(uc);
     return res;
+}
+
+UNICORN_EXPORT
+uc_err uc_mmio_map(uc_engine *uc, uint64_t address, uint64_t size,
+                   uc_cb_mmio_read_t read_cb, void *user_data_read,
+                   uc_cb_mmio_write_t write_cb, void *user_data_write)
+{
+    mmio_cbs cbs = {0};
+
+    cbs.read = read_cb;
+    cbs.user_data_read = user_data_read;
+    cbs.write = write_cb;
+    cbs.user_data_write = user_data_write;
+    return mmio_map(uc, address, size, &cbs);
+}
+
+UNICORN_EXPORT
+uc_err uc_mmio_map_attrs(uc_engine *uc, uint64_t address, uint64_t size,
+                         uc_cb_mmio_read_attrs_t read_cb, void *user_data_read,
+                         uc_cb_mmio_write_attrs_t write_cb,
+                         void *user_data_write)
+{
+    mmio_cbs cbs = {0};
+
+    cbs.read_attrs = read_cb;
+    cbs.user_data_read = user_data_read;
+    cbs.write_attrs = write_cb;
+    cbs.user_data_write = user_data_write;
+    return mmio_map(uc, address, size, &cbs);
 }
 
 // Create a backup copy of the indicated MemoryRegion.
@@ -1622,23 +1693,19 @@ static bool split_mmio_region(struct uc_struct *uc, MemoryRegion *mr,
     m_size = (uint64_t)(chunk_end - address);
 
     if (l_size > 0) {
-        if (uc_mmio_map(uc, begin, l_size, backup.read, backup.user_data_read,
-                        backup.write, backup.user_data_write) != UC_ERR_OK) {
+        if (mmio_map(uc, begin, l_size, &backup) != UC_ERR_OK) {
             return false;
         }
     }
 
     if (m_size > 0 && !do_delete) {
-        if (uc_mmio_map(uc, address, m_size, backup.read, backup.user_data_read,
-                        backup.write, backup.user_data_write) != UC_ERR_OK) {
+        if (mmio_map(uc, address, m_size, &backup) != UC_ERR_OK) {
             return false;
         }
     }
 
     if (r_size > 0) {
-        if (uc_mmio_map(uc, chunk_end, r_size, backup.read,
-                        backup.user_data_read, backup.write,
-                        backup.user_data_write) != UC_ERR_OK) {
+        if (mmio_map(uc, chunk_end, r_size, &backup) != UC_ERR_OK) {
             return false;
         }
     }

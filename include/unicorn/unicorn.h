@@ -343,6 +343,57 @@ typedef void (*uc_cb_mmio_write_t)(uc_engine *uc, uint64_t offset,
                                    unsigned size, uint64_t value,
                                    void *user_data);
 
+/**
+ * @brief Bus attributes of the access an MMIO callback serves.
+ *
+ * They come from the TLB entry of the access. On a v8-M core, secure is the
+ * transaction attribute, HNONSEC inverted: the security state the block was
+ * translated for, made Non-secure by the SAU and IDAU when the lookup is on.
+ * With the lookup off it is the security state, so a core with the Security
+ * Extension reads true until it leaves Secure state. A core without the
+ * Security Extension, opened without UC_MODE_MCLASS, which selects a
+ * Cortex-M33, reads false for every access. privileged is HPROT[1],
+ * false for an unprivileged Thread mode access. Both come from the MMU index
+ * the block was translated with: a UC_ARM_REG_SECURE or UC_ARM_REG_CONTROL
+ * write from a hook reaches them at the next block lookup, not for the rest
+ * of the running block or a block chained to it. Write those while the
+ * emulation is stopped or from UC_HOOK_INTR. From inside a memory or MMIO
+ * callback, write them and request UC_CTL_UC_EXIT_AFTER_INSN, enabled by
+ * UC_CTL_UC_USE_EXIT_AFTER_INSN: the run ends after the instruction, its
+ * access done once. uc_emu_stop() from the callback
+ * repeats the access on resume. A uc_mem_read() or uc_mem_write() of the
+ * region carries secure false and privileged true. uc_mem_read_attrs() and
+ * uc_mem_write_attrs() carry the attributes they are given.
+ */
+typedef struct uc_mem_attrs {
+    bool secure;
+    bool privileged;
+} uc_mem_attrs;
+
+/**
+ * @brief MMIO read callback of uc_mmio_map_attrs().
+ * @param offset Offset of the access from the region base.
+ * @param size Bytes read.
+ * @param attrs Bus attributes of the access.
+ * @param user_data User data passed to uc_mmio_map_attrs().
+ * @return The value read.
+ */
+typedef uint64_t (*uc_cb_mmio_read_attrs_t)(uc_engine *uc, uint64_t offset,
+                                            unsigned size, uc_mem_attrs attrs,
+                                            void *user_data);
+
+/**
+ * @brief MMIO write callback of uc_mmio_map_attrs().
+ * @param offset Offset of the access from the region base.
+ * @param size Bytes written.
+ * @param value Value written.
+ * @param attrs Bus attributes of the access.
+ * @param user_data User data passed to uc_mmio_map_attrs().
+ */
+typedef void (*uc_cb_mmio_write_attrs_t)(uc_engine *uc, uint64_t offset,
+                                         unsigned size, uint64_t value,
+                                         uc_mem_attrs attrs, void *user_data);
+
 // These are all op codes we support to hook for UC_HOOK_TCG_OP_CODE.
 // Be cautious since it may bring much more overhead than UC_HOOK_CODE without
 // proper flags.
@@ -1343,6 +1394,39 @@ UNICORN_EXPORT
 uc_err uc_mem_map_alias(uc_engine *uc, uint64_t address, uint64_t size,
                         uint32_t perms, uint64_t target);
 
+/**
+ * @brief Reads memory as uc_mem_read(), with the bus attributes of the access.
+ *
+ * MMIO callbacks of uc_mmio_map_attrs() regions receive @p attrs.
+ *
+ * @param uc Handle returned by uc_open().
+ * @param address First address read.
+ * @param bytes Buffer receiving @p size bytes.
+ * @param size Bytes read.
+ * @param attrs Bus attributes of the access.
+ * @return UC_ERR_OK, or the error of uc_mem_read().
+ */
+UNICORN_EXPORT
+uc_err uc_mem_read_attrs(uc_engine *uc, uint64_t address, void *bytes,
+                         uint64_t size, uc_mem_attrs attrs);
+
+/**
+ * @brief Writes memory as uc_mem_write(), with the bus attributes of the
+ *        access.
+ *
+ * MMIO callbacks of uc_mmio_map_attrs() regions receive @p attrs.
+ *
+ * @param uc Handle returned by uc_open().
+ * @param address First address written.
+ * @param bytes The @p size bytes written.
+ * @param size Bytes written.
+ * @param attrs Bus attributes of the access.
+ * @return UC_ERR_OK, or the error of uc_mem_write().
+ */
+UNICORN_EXPORT
+uc_err uc_mem_write_attrs(uc_engine *uc, uint64_t address, const void *bytes,
+                          uint64_t size, uc_mem_attrs attrs);
+
 /*
  Map MMIO in for emulation.
  This API adds a MMIO region that can be used by emulation.
@@ -1366,6 +1450,27 @@ UNICORN_EXPORT
 uc_err uc_mmio_map(uc_engine *uc, uint64_t address, uint64_t size,
                    uc_cb_mmio_read_t read_cb, void *user_data_read,
                    uc_cb_mmio_write_t write_cb, void *user_data_write);
+
+/**
+ * @brief Maps MMIO whose callbacks receive the bus attributes of each access.
+ *
+ * As uc_mmio_map(), with callbacks that also take a uc_mem_attrs. A split of
+ * the region by uc_mem_protect() or uc_mem_unmap() keeps these callbacks.
+ *
+ * @param uc Handle returned by uc_open().
+ * @param address Base of the region, aligned as for uc_mmio_map().
+ * @param size Size of the region, as for uc_mmio_map().
+ * @param read_cb Read callback, NULL for a region that cannot be read.
+ * @param user_data_read Passed to @p read_cb.
+ * @param write_cb Write callback, NULL for a region that cannot be written.
+ * @param user_data_write Passed to @p write_cb.
+ * @return UC_ERR_OK, or the error of uc_mmio_map().
+ */
+UNICORN_EXPORT
+uc_err uc_mmio_map_attrs(uc_engine *uc, uint64_t address, uint64_t size,
+                         uc_cb_mmio_read_attrs_t read_cb, void *user_data_read,
+                         uc_cb_mmio_write_attrs_t write_cb,
+                         void *user_data_write);
 
 /*
  Unmap a region of emulation memory.
