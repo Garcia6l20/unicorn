@@ -2093,6 +2093,253 @@ static void test_arm_v8m_security_state(void)
     OK(uc_close(uc));
 }
 
+#define V8M_EXCP_DATA_ABORT 4
+#define V8M_SAU_ENABLE 1
+#define V8M_TT_SRVALID (1u << 17)
+#define V8M_TT_S (1u << 22)
+#define V8M_TT_IRVALID (1u << 23)
+#define V8M_LOOP_COUNT 1000
+
+static void test_arm_v8m_reg(uc_engine *uc, int regid, uint32_t value)
+{
+    OK(uc_reg_write(uc, regid, &value));
+}
+
+static uint32_t test_arm_v8m_get(uc_engine *uc, int regid)
+{
+    uint32_t value = 0;
+
+    OK(uc_reg_read(uc, regid, &value));
+    return value;
+}
+
+static void test_arm_v8m_sau_region(uc_engine *uc, uint32_t region,
+                                    uint32_t base, uint32_t rlar)
+{
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_RNR, region);
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_RBAR, base);
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_RLAR, rlar);
+}
+
+static uc_engine *test_arm_v8m_ns_open(const char *code, uint64_t size,
+                                       V8M_RUN *run)
+{
+    uc_engine *uc = test_arm_v8m_open(code, size, run);
+
+    OK(uc_ctl_arm_security(uc, 1));
+    test_arm_v8m_sau_region(uc, 7, 0x1000, 0x13e0 | V8M_SAU_ENABLE);
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_CTRL, V8M_SAU_ENABLE);
+    test_arm_v8m_reg(uc, UC_ARM_REG_SECURE, 0);
+    return uc;
+}
+
+static void test_arm_v8m_load(uc_engine *uc, V8M_RUN *run, uint32_t address)
+{
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, address);
+    test_arm_v8m_run(uc, run, code_start, code_start + 2);
+}
+
+static void test_arm_v8m_sau_attribution(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    char code[] = "\x08\x68";
+    uint32_t ignored = 0;
+
+    uc = test_arm_v8m_ns_open(code, sizeof(code) - 1, &run);
+    test_arm_v8m_sau_region(uc, 0, 0x4000, 0x43e0 | V8M_SAU_ENABLE);
+
+    test_arm_v8m_load(uc, &run, 0x4100);
+    TEST_CHECK(run.intno == -1);
+    test_arm_v8m_load(uc, &run, 0x4400);
+    TEST_CHECK(run.intno == V8M_EXCP_DATA_ABORT);
+
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_RNR, 0);
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_RLAR, 0x4000 | V8M_SAU_ENABLE);
+    test_arm_v8m_load(uc, &run, 0x4100);
+    TEST_CHECK(run.intno == V8M_EXCP_DATA_ABORT);
+
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_RNR, 3);
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_RBAR, 0x5013);
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_RLAR, 0x53ff);
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_CTRL, 0xff);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_SAU_RBAR) == 0x5000);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_SAU_RLAR) == 0x53e3);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_SAU_CTRL) == 3);
+    uc_assert_err(UC_ERR_ARG,
+                  uc_reg_write(uc, UC_ARM_REG_SAU_RNR, &(uint32_t){8}));
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_SAU_RNR) == 3);
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_RNR, 0);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_SAU_RLAR) ==
+               (0x4000 | V8M_SAU_ENABLE));
+    OK(uc_close(uc));
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB, code, sizeof(code) - 1,
+                    UC_CPU_ARM_CORTEX_M7);
+    uc_assert_err(UC_ERR_ARG, uc_reg_read(uc, UC_ARM_REG_SAU_CTRL, &ignored));
+    uc_assert_err(UC_ERR_ARG, uc_reg_write(uc, UC_ARM_REG_SAU_RLAR, &ignored));
+    OK(uc_close(uc));
+}
+
+static void test_arm_v8m_region_idau(void *user, uint32_t address, int *region,
+                                     bool *exempt, bool *ns, bool *nsc)
+{
+    if (address >= 0x4000 && address <= 0x43ff) {
+        *region = 7;
+    }
+}
+
+static void test_arm_v8m_tt(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    char code[] = "\x41\xe8\x00\xf0";
+    uint32_t r0;
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    OK(uc_ctl_arm_security(uc, 1));
+    OK(uc_ctl_arm_idau(uc, test_arm_v8m_region_idau, NULL));
+    test_arm_v8m_sau_region(uc, 2, 0x4000, 0x43e0 | V8M_SAU_ENABLE);
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_RNR, 5);
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_CTRL, V8M_SAU_ENABLE);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0x4000);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 4);
+    r0 = test_arm_v8m_get(uc, UC_ARM_REG_R0);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK((r0 & V8M_TT_SRVALID) != 0);
+    TEST_CHECK(((r0 >> 8) & 0xff) == 2);
+    TEST_CHECK((r0 & V8M_TT_S) == 0);
+    TEST_CHECK((r0 & V8M_TT_IRVALID) != 0);
+    TEST_CHECK((r0 >> 24) == 7);
+    TEST_MSG("TT 0x%08x", r0);
+    OK(uc_close(uc));
+}
+
+typedef struct _V8M_SAU_HOOK {
+    int calls;
+    int at;
+    bool stop;
+} V8M_SAU_HOOK;
+
+static void test_arm_v8m_sau_store(uc_engine *uc, uc_mem_type type,
+                                   uint64_t address, int size, int64_t value,
+                                   void *user_data)
+{
+    V8M_SAU_HOOK *hook = user_data;
+
+    hook->calls++;
+    if (hook->calls == hook->at) {
+        test_arm_v8m_reg(uc, UC_ARM_REG_SAU_RNR, 7);
+        test_arm_v8m_reg(uc, UC_ARM_REG_SAU_RLAR, 0);
+        if (hook->stop) {
+            OK(uc_emu_stop(uc));
+        }
+    }
+}
+
+static uc_engine *test_arm_v8m_loop_open(const char *code, uint64_t size,
+                                         V8M_RUN *run, V8M_SAU_HOOK *hook)
+{
+    uc_hook handle;
+    uc_engine *uc = test_arm_v8m_ns_open(code, size, run);
+
+    test_arm_v8m_sau_region(uc, 0, 0x4000, 0x43e0 | V8M_SAU_ENABLE);
+    OK(uc_hook_add(uc, &handle, UC_HOOK_MEM_WRITE, test_arm_v8m_sau_store, hook,
+                   0x4000, 0x4003));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, 0x4000);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, V8M_LOOP_COUNT);
+    return uc;
+}
+
+static void test_arm_v8m_loop_run(uc_engine *uc, V8M_RUN *run, uint64_t begin,
+                                  size_t per_iteration)
+{
+    run->intno = -1;
+    run->pc = 0;
+    OK(uc_emu_start(uc, begin | 1, code_start + 0x100, 0,
+                    per_iteration * V8M_LOOP_COUNT + V8M_STEP_BOUND));
+}
+
+static void test_arm_v8m_sau_chained_tb(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    char code[] = "\x10\x60\x01\x3b\xfc\xd1\x00\xbf";
+    V8M_SAU_HOOK hook = {0, 10, false};
+
+    uc = test_arm_v8m_loop_open(code, sizeof(code) - 1, &run, &hook);
+    test_arm_v8m_loop_run(uc, &run, code_start, 3);
+    TEST_CHECK(hook.calls == V8M_LOOP_COUNT);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) == 0);
+    TEST_CHECK(run.intno == V8M_EXCP_PREFETCH_ABORT);
+    TEST_CHECK(run.pc == code_start + 6);
+    OK(uc_close(uc));
+
+    hook.calls = 0;
+    hook.stop = true;
+    uc = test_arm_v8m_loop_open(code, sizeof(code) - 1, &run, &hook);
+    test_arm_v8m_loop_run(uc, &run, code_start, 3);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(hook.calls == 10);
+    test_arm_v8m_loop_run(uc, &run, test_arm_v8m_get(uc, UC_ARM_REG_PC), 3);
+    TEST_CHECK(run.intno == V8M_EXCP_PREFETCH_ABORT);
+    TEST_CHECK(run.pc == code_start);
+    TEST_CHECK(hook.calls == 10);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) == V8M_LOOP_COUNT - 9);
+    OK(uc_close(uc));
+}
+
+static void test_arm_v8m_sau_isb(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    char code[] = "\x10\x60\xbf\xf3\x4f\x8f\xbf\xf3\x6f\x8f\x01\x3b\xf8\xd1"
+                  "\x00\xbf";
+    V8M_SAU_HOOK hook = {0, 10, false};
+
+    uc = test_arm_v8m_loop_open(code, sizeof(code) - 1, &run, &hook);
+    test_arm_v8m_loop_run(uc, &run, code_start, 5);
+    TEST_CHECK(hook.calls == V8M_LOOP_COUNT);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) == 0);
+    TEST_CHECK(run.intno == V8M_EXCP_PREFETCH_ABORT);
+    TEST_CHECK(run.pc == code_start + 14);
+    TEST_MSG("calls %d r3 %u pc 0x%x", hook.calls,
+             test_arm_v8m_get(uc, UC_ARM_REG_R3), run.pc);
+    OK(uc_close(uc));
+}
+
+static void test_arm_v8m_sau_subpage(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    char code[] = "\x08\x68\x08\x68\x08\x68\x08\x68";
+    uint64_t count = 0;
+
+    uc = test_arm_v8m_ns_open(code, sizeof(code) - 1, &run);
+    test_arm_v8m_sau_region(uc, 0, 0x4000, 0x4000 | V8M_SAU_ENABLE);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0x4010);
+    OK(uc_ctl_slow_path_count_reset(uc));
+    test_arm_v8m_run(uc, &run, code_start, code_start + 8);
+    OK(uc_ctl_slow_path_count(uc, &count));
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(count >= 4);
+    TEST_MSG("slow path count %" PRIu64, count);
+
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0x4100);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 2);
+    TEST_CHECK(run.intno == V8M_EXCP_DATA_ABORT);
+    OK(uc_close(uc));
+
+    uc = test_arm_v8m_ns_open(code, 2, &run);
+    test_arm_v8m_sau_region(uc, 0, 0x4000, 0x43e0 | V8M_SAU_ENABLE);
+    test_arm_v8m_sau_region(uc, 1, 0x4000, 0x4000 | V8M_SAU_ENABLE);
+    test_arm_v8m_load(uc, &run, 0x4100);
+    TEST_CHECK(run.intno == -1);
+    test_arm_v8m_load(uc, &run, 0x4010);
+    TEST_CHECK(run.intno == V8M_EXCP_DATA_ABORT);
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
@@ -2179,4 +2426,9 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_v8m_lookup_on", test_arm_v8m_lookup_on},
              {"test_arm_v8m_security_off", test_arm_v8m_security_off},
              {"test_arm_v8m_security_state", test_arm_v8m_security_state},
+             {"test_arm_v8m_sau_attribution", test_arm_v8m_sau_attribution},
+             {"test_arm_v8m_tt", test_arm_v8m_tt},
+             {"test_arm_v8m_sau_chained_tb", test_arm_v8m_sau_chained_tb},
+             {"test_arm_v8m_sau_isb", test_arm_v8m_sau_isb},
+             {"test_arm_v8m_sau_subpage", test_arm_v8m_sau_subpage},
              {NULL, NULL}};

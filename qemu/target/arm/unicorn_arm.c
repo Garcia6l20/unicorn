@@ -248,6 +248,16 @@ static bool arm_v8m_has_security(CPUARMState *env)
            arm_feature(env, ARM_FEATURE_M_SECURITY);
 }
 
+static bool arm_v8m_has_sau_regions(CPUARMState *env)
+{
+    return arm_v8m_has_security(env) && env_archcpu(env)->sau_sregion > 0;
+}
+
+static void arm_v8m_sau_changed(CPUARMState *env)
+{
+    env->uc->tcg_flush_tlb(env->uc);
+}
+
 DEFAULT_VISIBILITY
 uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
                 size_t *size)
@@ -416,6 +426,34 @@ uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
             }
             CHECK_REG_TYPE(uint32_t);
             *(uint32_t *)value = env->v7m.secure;
+            break;
+        case UC_ARM_REG_SAU_CTRL:
+            if (!arm_v8m_has_security(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            *(uint32_t *)value = env->sau.ctrl;
+            break;
+        case UC_ARM_REG_SAU_RNR:
+            if (!arm_v8m_has_security(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            *(uint32_t *)value = env->sau.rnr;
+            break;
+        case UC_ARM_REG_SAU_RBAR:
+            if (!arm_v8m_has_sau_regions(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            *(uint32_t *)value = env->sau.rbar[env->sau.rnr];
+            break;
+        case UC_ARM_REG_SAU_RLAR:
+            if (!arm_v8m_has_sau_regions(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            *(uint32_t *)value = env->sau.rlar[env->sau.rnr];
             break;
         }
     }
@@ -646,6 +684,40 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
             CHECK_REG_TYPE(uint32_t);
             switch_v7m_security_state(env, *(uint32_t *)value != 0);
             arm_rebuild_hflags(env);
+            break;
+        case UC_ARM_REG_SAU_CTRL:
+            if (!arm_v8m_has_security(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            env->sau.ctrl = *(uint32_t *)value & 3;
+            arm_v8m_sau_changed(env);
+            break;
+        case UC_ARM_REG_SAU_RNR:
+            if (!arm_v8m_has_security(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            if (*(uint32_t *)value >= env_archcpu(env)->sau_sregion) {
+                return UC_ERR_ARG;
+            }
+            env->sau.rnr = *(uint32_t *)value;
+            break;
+        case UC_ARM_REG_SAU_RBAR:
+            if (!arm_v8m_has_sau_regions(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            env->sau.rbar[env->sau.rnr] = *(uint32_t *)value & ~0x1f;
+            arm_v8m_sau_changed(env);
+            break;
+        case UC_ARM_REG_SAU_RLAR:
+            if (!arm_v8m_has_sau_regions(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            env->sau.rlar[env->sau.rnr] = *(uint32_t *)value & ~0x1c;
+            arm_v8m_sau_changed(env);
             break;
         }
     }
