@@ -1532,6 +1532,7 @@
 #define armv7m_nvic_set_pending armv7m_nvic_set_pending_arm
 #define helper_v7m_preserve_fp_state helper_v7m_preserve_fp_state_arm
 #define write_v7m_exception write_v7m_exception_arm
+#define switch_v7m_security_state switch_v7m_security_state_arm
 #define helper_v7m_bxns helper_v7m_bxns_arm
 #define helper_v7m_blxns helper_v7m_blxns_arm
 #define armv7m_nvic_neg_prio_requested armv7m_nvic_neg_prio_requested_arm

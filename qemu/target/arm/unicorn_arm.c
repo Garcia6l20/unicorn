@@ -242,6 +242,12 @@ static bool arm_v8m_has_stack_limits(CPUARMState *env)
     return arm_feature(env, ARM_FEATURE_M) && arm_feature(env, ARM_FEATURE_V8);
 }
 
+static bool arm_v8m_has_security(CPUARMState *env)
+{
+    return arm_feature(env, ARM_FEATURE_M) &&
+           arm_feature(env, ARM_FEATURE_M_SECURITY);
+}
+
 DEFAULT_VISIBILITY
 uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
                 size_t *size)
@@ -403,6 +409,13 @@ uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
             }
             CHECK_REG_TYPE(uint32_t);
             *(uint32_t *)value = env->v7m.psplim[env->v7m.secure];
+            break;
+        case UC_ARM_REG_SECURE:
+            if (!arm_v8m_has_security(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            *(uint32_t *)value = env->v7m.secure;
             break;
         }
     }
@@ -625,6 +638,14 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
             }
             CHECK_REG_TYPE(uint32_t);
             env->v7m.psplim[env->v7m.secure] = *(uint32_t *)value & ~7;
+            break;
+        case UC_ARM_REG_SECURE:
+            if (!arm_v8m_has_security(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            switch_v7m_security_state(env, *(uint32_t *)value != 0);
+            arm_rebuild_hflags(env);
             break;
         }
     }

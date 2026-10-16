@@ -390,7 +390,7 @@ void write_v7m_exception(CPUARMState *env, uint32_t new_exc)
 }
 
 /* Switch M profile security state between NS and S */
-static void switch_v7m_security_state(CPUARMState *env, bool new_secstate)
+void switch_v7m_security_state(CPUARMState *env, bool new_secstate)
 {
     uint32_t new_ss_msp, new_ss_psp;
 

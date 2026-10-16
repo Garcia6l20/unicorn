@@ -187,7 +187,8 @@ public interface ArmConst {
     public static final int UC_ARM_REG_ESR = 140;
     public static final int UC_ARM_REG_MSPLIM = 141;
     public static final int UC_ARM_REG_PSPLIM = 142;
-    public static final int UC_ARM_REG_ENDING = 143;
+    public static final int UC_ARM_REG_SECURE = 143;
+    public static final int UC_ARM_REG_ENDING = 144;
 
     // alias registers
     public static final int UC_ARM_REG_R13 = 12;

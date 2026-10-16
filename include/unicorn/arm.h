@@ -224,6 +224,16 @@ typedef enum uc_arm_reg {
     UC_ARM_REG_ESR,
     UC_ARM_REG_MSPLIM,
     UC_ARM_REG_PSPLIM,
+    /**
+     * The v8-M security state, 1 Secure, 0 Non-secure. A write switches the
+     * state as BXNS does: the stack pointers move into the other state's
+     * bank, and the next block is translated for the new state. A write takes
+     * effect at the next block lookup: the rest of the current block and any
+     * block chained from it keep the old state, so write it while the
+     * emulation is stopped or from UC_HOOK_INTR. A write of the current state
+     * does nothing. UC_ERR_ARG without the Security Extension.
+     */
+    UC_ARM_REG_SECURE,
     UC_ARM_REG_ENDING, // <-- mark the end of the list or registers
 
     //> alias registers
