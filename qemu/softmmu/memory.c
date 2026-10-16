@@ -184,10 +184,11 @@ static MemTxResult mmio_read_attrs_wrapper(struct uc_struct *uc, void *opaque,
     uc_mem_attrs bus = {attrs.secure, !attrs.user};
 
     addr = addr & ((target_ulong)(-1));
+    uc->refuse_mmio = false;
     *data = cbs->read_attrs ? cbs->read_attrs(uc, addr, size, bus,
                                               cbs->user_data_read)
                             : 0;
-    return MEMTX_OK;
+    return uc->refuse_mmio ? MEMTX_ERROR : MEMTX_OK;
 }
 
 static MemTxResult mmio_write_attrs_wrapper(struct uc_struct *uc, void *opaque,
@@ -198,10 +199,11 @@ static MemTxResult mmio_write_attrs_wrapper(struct uc_struct *uc, void *opaque,
     uc_mem_attrs bus = {attrs.secure, !attrs.user};
 
     addr = addr & ((target_ulong)(-1));
+    uc->refuse_mmio = false;
     if (cbs->write_attrs) {
         cbs->write_attrs(uc, addr, size, data, bus, cbs->user_data_write);
     }
-    return MEMTX_OK;
+    return uc->refuse_mmio ? MEMTX_ERROR : MEMTX_OK;
 }
 
 static void mmio_region_destructor_uc(MemoryRegion *mr)

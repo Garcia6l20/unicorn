@@ -3352,6 +3352,15 @@ uc_err uc_ctl(uc_engine *uc, uc_control_type control, ...)
         break;
     }
 
+    case UC_CTL_UC_REFUSE_MMIO: {
+        if (rw == UC_CTL_IO_WRITE) {
+            uc->refuse_mmio = true;
+        } else {
+            err = UC_ERR_ARG;
+        }
+        break;
+    }
+
     case UC_CTL_UC_USE_EXIT_AFTER_INSN: {
         if (rw == UC_CTL_IO_WRITE && uc->arch == UC_ARCH_ARM &&
             uc->nested_level == 0) {

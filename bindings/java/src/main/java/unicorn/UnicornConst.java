@@ -171,6 +171,7 @@ public interface UnicornConst {
     public static final int UC_CTL_ARM_IDAU = 24;
     public static final int UC_CTL_ARM_SECURITY = 25;
     public static final int UC_CTL_BUS_FILTER = 26;
+    public static final int UC_CTL_UC_REFUSE_MMIO = 27;
     public static final int UC_CTL_CONTEXT_CPU = 1;
     public static final int UC_CTL_CONTEXT_MEMORY = 2;
 

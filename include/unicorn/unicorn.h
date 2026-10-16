@@ -861,6 +861,24 @@ typedef enum uc_control_type {
      * UC_ARCH_ARM only, UC_ERR_ARG on other architectures and for a read.
      * Write: @args = (uc_cb_bus_page_t, uc_cb_bus_access_t, void *) */
     UC_CTL_BUS_FILTER,
+    /**
+     * Refuse the access the current uc_mmio_map_attrs callback serves. Only
+     * meaningful from inside that callback, a request made anywhere else is
+     * dropped by the next MMIO access. A refused CPU access is not done: a
+     * load leaves its destination register unchanged, and the CPU takes the
+     * fault its architecture gives a failed bus transaction, at the faulting
+     * instruction, also in the middle of a translated block. On Arm that is
+     * EXCP_DATA_ABORT, UC_ARM_REG_FAULT_STATUS 0x1008 for a load and 0x1808
+     * for a store, UC_ARM_REG_FAULT_ADDRESS the access address. The value a
+     * refused read callback returns is ignored. A refused uc_mem_read_attrs
+     * or uc_mem_write_attrs fails with UC_ERR_READ_UNMAPPED or
+     * UC_ERR_WRITE_UNMAPPED. Request it after any nested access the callback
+     * makes to another uc_mmio_map_attrs region: that access clears the
+     * request. UC_ARCH_ARM only for CPU accesses: on an architecture without
+     * a failed-transaction handler the refused CPU access completes with the
+     * callback's value. UC_ERR_ARG for a read.
+     * Write: @args = () */
+    UC_CTL_UC_REFUSE_MMIO,
 } uc_control_type;
 
 /*
@@ -955,6 +973,7 @@ See sample_ctl.c for a detailed example.
 #define uc_ctl_prealloc(uc, prealloc)                                          \
     uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_PREALLOC, 1), (prealloc))
 #define uc_ctl_drop_store(uc) uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_DROP_STORE, 0))
+#define uc_ctl_refuse_mmio(uc) uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_REFUSE_MMIO, 0))
 #define uc_ctl_exit_after_insn_enable(uc)                                      \
     uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_USE_EXIT_AFTER_INSN, 1), 1)
 #define uc_ctl_exit_after_insn_disable(uc)                                     \

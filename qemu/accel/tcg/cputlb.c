@@ -1073,16 +1073,20 @@ static uint64_t io_readx(CPUArchState *env, CPUIOTLBEntry *iotlbentry,
         cpu_io_recompile(cpu, retaddr);
     }
 
+    uc->refuse_mmio = false;
     r = memory_region_dispatch_read(uc, mr, mr_offset, &val, op, iotlbentry->attrs);
-    if (r != MEMTX_OK) {
-#if 0
+    if (r != MEMTX_OK && uc->refuse_mmio) {
+        CPUClass *cc = CPU_GET_CLASS(cpu);
         hwaddr physaddr = mr_offset +
             section->offset_within_address_space -
             section->offset_within_region;
 
-        cpu_transaction_failed(cpu, physaddr, addr, memop_size(op), access_type,
-                               mmu_idx, iotlbentry->attrs, r, retaddr);
-#endif
+        uc->refuse_mmio = false;
+        if (cc->do_transaction_failed) {
+            cc->do_transaction_failed(cpu, physaddr, addr, memop_size(op),
+                                      access_type, mmu_idx, iotlbentry->attrs,
+                                      r, retaddr);
+        }
     }
 
     return val;
@@ -1107,17 +1111,20 @@ static void io_writex(CPUArchState *env, CPUIOTLBEntry *iotlbentry,
     }
     cpu->mem_io_pc = retaddr;
 
+    uc->refuse_mmio = false;
     r = memory_region_dispatch_write(uc, mr, mr_offset, val, op, iotlbentry->attrs);
-    if (r != MEMTX_OK) {
-#if 0
+    if (r != MEMTX_OK && uc->refuse_mmio) {
+        CPUClass *cc = CPU_GET_CLASS(cpu);
         hwaddr physaddr = mr_offset +
             section->offset_within_address_space -
             section->offset_within_region;
 
-        cpu_transaction_failed(cpu, physaddr, addr, memop_size(op),
-                               MMU_DATA_STORE, mmu_idx, iotlbentry->attrs, r,
-                               retaddr);
-#endif
+        uc->refuse_mmio = false;
+        if (cc->do_transaction_failed) {
+            cc->do_transaction_failed(cpu, physaddr, addr, memop_size(op),
+                                      MMU_DATA_STORE, mmu_idx,
+                                      iotlbentry->attrs, r, retaddr);
+        }
     }
 }
 

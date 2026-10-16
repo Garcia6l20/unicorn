@@ -3424,6 +3424,175 @@ static void test_arm_bus_filter_fault(void)
     OK(uc_close(uc));
 }
 
+typedef struct _REFUSE_LOG {
+    int reads;
+    int writes;
+    bool refuse_reads;
+    bool refuse_writes;
+    int intno;
+    uint32_t status;
+    uint32_t address;
+    uint32_t pc;
+    uint32_t xpsr;
+} REFUSE_LOG;
+
+static uint64_t test_arm_refuse_read(uc_engine *uc, uint64_t offset,
+                                     unsigned size, uc_mem_attrs attrs,
+                                     void *user_data)
+{
+    REFUSE_LOG *log = user_data;
+
+    log->reads++;
+    if (log->refuse_reads) {
+        OK(uc_ctl_refuse_mmio(uc));
+    }
+    return 0x5a5a0000 | offset;
+}
+
+static void test_arm_refuse_write(uc_engine *uc, uint64_t offset,
+                                  unsigned size, uint64_t value,
+                                  uc_mem_attrs attrs, void *user_data)
+{
+    REFUSE_LOG *log = user_data;
+
+    log->writes++;
+    if (log->refuse_writes) {
+        OK(uc_ctl_refuse_mmio(uc));
+    }
+}
+
+static void test_arm_refuse_intr(uc_engine *uc, int intno, void *user_data)
+{
+    REFUSE_LOG *log = user_data;
+
+    log->intno = intno;
+    OK(uc_reg_read(uc, UC_ARM_REG_FAULT_STATUS, &log->status));
+    OK(uc_reg_read(uc, UC_ARM_REG_FAULT_ADDRESS, &log->address));
+    OK(uc_reg_read(uc, UC_ARM_REG_PC, &log->pc));
+    OK(uc_reg_read(uc, UC_ARM_REG_XPSR, &log->xpsr));
+    OK(uc_emu_stop(uc));
+}
+
+static void test_arm_refuse_run(uc_engine *uc, REFUSE_LOG *log, uint64_t begin,
+                                uint64_t until)
+{
+    log->reads = 0;
+    log->writes = 0;
+    log->intno = -1;
+    log->status = 0;
+    log->address = 0;
+    log->pc = 0;
+    test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0xdeadbeef);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, 0);
+    OK(uc_emu_start(uc, begin | 1, until, 0, V8M_STEP_BOUND));
+}
+
+static void test_arm_mmio_refuse(void)
+{
+    uc_engine *uc;
+    REFUSE_LOG log;
+    uc_hook hook;
+    uint32_t word = 0;
+    char code[] = "\x01\x23\x11\x60\x02\x23\x10\x68\x03\x23";
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS, code,
+                    sizeof(code) - 1, UC_CPU_ARM_CORTEX_M33);
+    memset(&log, 0, sizeof(log));
+    OK(uc_hook_add(uc, &hook, UC_HOOK_INTR, test_arm_refuse_intr, &log, 1, 0));
+    OK(uc_mmio_map_attrs(uc, V8M_MMIO, 0x1000, test_arm_refuse_read, &log,
+                         test_arm_refuse_write, &log));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0x11223344);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, V8M_MMIO + 0x24);
+
+    test_arm_refuse_run(uc, &log, code_start, code_start + 10);
+    TEST_CHECK(log.intno == -1);
+    TEST_CHECK(log.writes == 1 && log.reads == 1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == 0x5a5a0024);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) == 3);
+
+    log.refuse_writes = true;
+    test_arm_refuse_run(uc, &log, code_start, code_start + 10);
+    TEST_CHECK(log.intno == V8M_EXCP_DATA_ABORT);
+    TEST_CHECK(log.status == (BUS_FAULT_EXTERNAL | BUS_FAULT_WNR));
+    TEST_CHECK(log.address == V8M_MMIO + 0x24);
+    TEST_CHECK(log.pc == code_start + 2);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) == 1);
+    TEST_CHECK(log.reads == 0);
+    TEST_MSG("store status 0x%x address 0x%x pc 0x%x", log.status, log.address,
+             log.pc);
+
+    log.refuse_writes = false;
+    log.refuse_reads = true;
+    test_arm_refuse_run(uc, &log, code_start + 4, code_start + 10);
+    TEST_CHECK(log.intno == V8M_EXCP_DATA_ABORT);
+    TEST_CHECK(log.status == BUS_FAULT_EXTERNAL);
+    TEST_CHECK(log.address == V8M_MMIO + 0x24);
+    TEST_CHECK(log.pc == code_start + 6);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == 0xdeadbeef);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) == 2);
+    TEST_MSG("load status 0x%x address 0x%x pc 0x%x", log.status, log.address,
+             log.pc);
+
+    uc_assert_err(UC_ERR_READ_UNMAPPED,
+                  uc_mem_read_attrs(uc, V8M_MMIO + 0x30, &word, sizeof(word),
+                                    (uc_mem_attrs){true, true}));
+    log.refuse_reads = false;
+    log.refuse_writes = true;
+    uc_assert_err(UC_ERR_WRITE_UNMAPPED,
+                  uc_mem_write_attrs(uc, V8M_MMIO + 0x30, &word, sizeof(word),
+                                     (uc_mem_attrs){true, true}));
+    log.refuse_writes = false;
+    OK(uc_mem_read_attrs(uc, V8M_MMIO + 0x30, &word, sizeof(word),
+                         (uc_mem_attrs){true, true}));
+    TEST_CHECK(word == 0x5a5a0030);
+
+    test_arm_refuse_run(uc, &log, code_start, code_start + 10);
+    TEST_CHECK(log.intno == -1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) == 3);
+    uc_assert_err(UC_ERR_ARG,
+                  uc_ctl(uc, UC_CTL_READ(UC_CTL_UC_REFUSE_MMIO, 0)));
+    OK(uc_close(uc));
+}
+
+#define V8M_XPSR_IT (0x3fu << 10 | 3u << 25)
+#define V8M_IT_EQ_TWO_LEFT (0x04u << 8)
+
+static void test_arm_mmio_refuse_it_block(void)
+{
+    uc_engine *uc;
+    REFUSE_LOG log;
+    uc_hook hook;
+    char code[] = "\x01\x23\x9b\x42\x02\xbf\x04\x23\x11\x60\x05\x23\x06\x23"
+                  "\x9b\x42\x04\xbf\x10\x68\x07\x23\x08\x23";
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS, code,
+                    sizeof(code) - 1, UC_CPU_ARM_CORTEX_M33);
+    memset(&log, 0, sizeof(log));
+    OK(uc_hook_add(uc, &hook, UC_HOOK_INTR, test_arm_refuse_intr, &log, 1, 0));
+    OK(uc_mmio_map_attrs(uc, V8M_MMIO, 0x1000, test_arm_refuse_read, &log,
+                         test_arm_refuse_write, &log));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0x11223344);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, V8M_MMIO + 0x24);
+
+    log.refuse_writes = true;
+    test_arm_refuse_run(uc, &log, code_start, code_start + 14);
+    TEST_CHECK(log.intno == V8M_EXCP_DATA_ABORT);
+    TEST_CHECK(log.pc == code_start + 8);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) == 4);
+    TEST_CHECK((log.xpsr & V8M_XPSR_IT) == V8M_IT_EQ_TWO_LEFT);
+    TEST_MSG("store xpsr 0x%x pc 0x%x", log.xpsr, log.pc);
+
+    log.refuse_writes = false;
+    log.refuse_reads = true;
+    test_arm_refuse_run(uc, &log, code_start + 14, code_start + 24);
+    TEST_CHECK(log.intno == V8M_EXCP_DATA_ABORT);
+    TEST_CHECK(log.pc == code_start + 18);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == 0xdeadbeef);
+    TEST_CHECK((log.xpsr & V8M_XPSR_IT) == V8M_IT_EQ_TWO_LEFT);
+    TEST_MSG("load xpsr 0x%x pc 0x%x", log.xpsr, log.pc);
+    OK(uc_close(uc));
+}
+
 static void test_arm_bus_filter_exec_after_data(void)
 {
     uc_engine *uc;
@@ -4161,6 +4330,8 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
               test_arm_bus_filter_sau_downgrade},
              {"test_arm_bus_filter_raz_wi", test_arm_bus_filter_raz_wi},
              {"test_arm_bus_filter_fault", test_arm_bus_filter_fault},
+             {"test_arm_mmio_refuse", test_arm_mmio_refuse},
+             {"test_arm_mmio_refuse_it_block", test_arm_mmio_refuse_it_block},
              {"test_arm_bus_filter_exec_after_data",
               test_arm_bus_filter_exec_after_data},
              {"test_arm_bus_filter_flush", test_arm_bus_filter_flush},

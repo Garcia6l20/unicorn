@@ -169,6 +169,7 @@ pub const unicornConst = enum(c_int) {
 	CTL_ARM_IDAU = 24,
 	CTL_ARM_SECURITY = 25,
 	CTL_BUS_FILTER = 26,
+	CTL_UC_REFUSE_MMIO = 27,
 	CTL_CONTEXT_CPU = 1,
 	CTL_CONTEXT_MEMORY = 2,
 

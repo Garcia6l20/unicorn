@@ -174,6 +174,7 @@ module Common =
     let UC_CTL_ARM_IDAU = 24
     let UC_CTL_ARM_SECURITY = 25
     let UC_CTL_BUS_FILTER = 26
+    let UC_CTL_UC_REFUSE_MMIO = 27
     let UC_CTL_CONTEXT_CPU = 1
     let UC_CTL_CONTEXT_MEMORY = 2
 
