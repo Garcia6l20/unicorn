@@ -10492,28 +10492,46 @@ static bool get_phys_addr_pmsav7(CPUARMState *env, uint32_t address,
     return !(*prot & (1 << access_type));
 }
 
+#define IREGION_NOTVALID -1
+
+static bool v8m_is_sau_exempt(CPUARMState *env, uint32_t address,
+                              MMUAccessType access_type)
+{
+    return
+        (access_type == MMU_INST_FETCH && m_is_system_region(env, address)) ||
+        (address >= 0xe0000000 && address <= 0xe0002fff) ||
+        (address >= 0xe000e000 && address <= 0xe000efff) ||
+        (address >= 0xe002e000 && address <= 0xe002efff) ||
+        (address >= 0xe0040000 && address <= 0xe0041fff) ||
+        (address >= 0xe00ff000 && address <= 0xe00fffff);
+}
+
 void v8m_security_lookup(CPUARMState *env, uint32_t address,
                                 MMUAccessType access_type, ARMMMUIdx mmu_idx,
                                 V8M_SAttributes *sattrs)
 {
-#if 0
     /* Look up the security attributes for this address. Compare the
      * pseudocode SecurityCheck() function.
      * We assume the caller has zero-initialized *sattrs.
      */
+    struct uc_struct *uc = env->uc;
     ARMCPU *cpu = env_archcpu(env);
     int r;
     bool idau_exempt = false, idau_ns = true, idau_nsc = true;
     int idau_region = IREGION_NOTVALID;
-    uint32_t addr_page_base = address & TARGET_PAGE_MASK;
-    uint32_t addr_page_limit = addr_page_base + (TARGET_PAGE_SIZE - 1);
+    uint32_t addr_page_base;
+    uint32_t addr_page_limit;
 
-    if (cpu->idau) {
-        IDAUInterfaceClass *iic = IDAU_INTERFACE_GET_CLASS(cpu->idau);
-        IDAUInterface *ii = IDAU_INTERFACE(cpu->idau);
+    if (!uc->arm_security) {
+        return;
+    }
 
-        iic->check(ii, address, &idau_region, &idau_exempt, &idau_ns,
-                   &idau_nsc);
+    addr_page_base = address & TARGET_PAGE_MASK;
+    addr_page_limit = addr_page_base + (TARGET_PAGE_SIZE - 1);
+
+    if (uc->arm_idau) {
+        uc->arm_idau(uc->arm_idau_user, address, &idau_region, &idau_exempt,
+                     &idau_ns, &idau_nsc);
     }
 
     if (access_type == MMU_INST_FETCH && extract32(address, 28, 4) == 0xf) {
@@ -10598,7 +10616,6 @@ void v8m_security_lookup(CPUARMState *env, uint32_t address,
             sattrs->nsc = idau_nsc;
         }
     }
-#endif
 }
 
 bool pmsav8_mpu_lookup(CPUARMState *env, uint32_t address,

@@ -1910,6 +1910,135 @@ static void test_arm_exit_after_insn_other_arch(void)
     OK(uc_close(uc));
 }
 
+#define V8M_EXCP_PREFETCH_ABORT 3
+#define V8M_STEP_BOUND 16
+
+typedef struct _V8M_RUN {
+    int intno;
+    uint32_t pc;
+} V8M_RUN;
+
+typedef struct _V8M_IDAU {
+    uint32_t exempt_base;
+    uint32_t exempt_limit;
+    int calls;
+} V8M_IDAU;
+
+static void test_arm_v8m_intr(uc_engine *uc, int intno, void *user_data)
+{
+    V8M_RUN *run = user_data;
+
+    if (run->intno == -1) {
+        run->intno = intno;
+        OK(uc_reg_read(uc, UC_ARM_REG_PC, &run->pc));
+    }
+    OK(uc_emu_stop(uc));
+}
+
+static void test_arm_v8m_idau(void *user, uint32_t address, int *region,
+                              bool *exempt, bool *ns, bool *nsc)
+{
+    V8M_IDAU *idau = user;
+
+    idau->calls++;
+    if (address >= idau->exempt_base && address <= idau->exempt_limit) {
+        *exempt = true;
+    }
+}
+
+static uc_engine *test_arm_v8m_open(const char *code, uint64_t size,
+                                    V8M_RUN *run)
+{
+    uc_engine *uc;
+    uc_hook hook;
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS, code,
+                    size, UC_CPU_ARM_CORTEX_M33);
+    OK(uc_hook_add(uc, &hook, UC_HOOK_INTR, test_arm_v8m_intr, run, 1, 0));
+    return uc;
+}
+
+static void test_arm_v8m_run(uc_engine *uc, V8M_RUN *run, uint64_t begin,
+                             uint64_t until)
+{
+    run->intno = -1;
+    run->pc = 0;
+    OK(uc_emu_start(uc, begin | 1, until, 0, V8M_STEP_BOUND));
+}
+
+static uc_engine *test_arm_v8m_bxns_setup(V8M_RUN *run, V8M_IDAU *idau)
+{
+    char code[] = "\x0c\x47";
+    char target[] = "\x5a\x20";
+    uint32_t r1 = 0x3000;
+    uc_engine *uc = test_arm_v8m_open(code, sizeof(code) - 1, run);
+
+    OK(uc_mem_write(uc, 0x3000, target, sizeof(target) - 1));
+    OK(uc_ctl_arm_idau(uc, test_arm_v8m_idau, idau));
+    OK(uc_reg_write(uc, UC_ARM_REG_R1, &r1));
+    return uc;
+}
+
+static void test_arm_v8m_lookup_on(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    V8M_IDAU idau = {0x3000, 0x33ff, 0};
+    uint32_t r0 = 0;
+    int ignored = 0;
+
+    uc = test_arm_v8m_bxns_setup(&run, &idau);
+    test_arm_v8m_run(uc, &run, code_start, 0x3002);
+    TEST_CHECK(run.intno == V8M_EXCP_PREFETCH_ABORT);
+    TEST_CHECK(run.pc == 0x3000);
+    OK(uc_close(uc));
+
+    uc = test_arm_v8m_bxns_setup(&run, &idau);
+    OK(uc_ctl_arm_security(uc, 1));
+    test_arm_v8m_run(uc, &run, code_start, 0x3002);
+    OK(uc_reg_read(uc, UC_ARM_REG_R0, &r0));
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(r0 == 0x5a);
+
+    OK(uc_ctl_arm_security(uc, 0));
+    test_arm_v8m_run(uc, &run, 0x3000, 0x3002);
+    TEST_CHECK(run.intno == V8M_EXCP_PREFETCH_ABORT);
+    TEST_CHECK(run.pc == 0x3000);
+
+    OK(uc_ctl_arm_security(uc, 1));
+    test_arm_v8m_run(uc, &run, 0x3000, 0x3002);
+    TEST_CHECK(run.intno == -1);
+
+    OK(uc_ctl_arm_idau(uc, NULL, NULL));
+    test_arm_v8m_run(uc, &run, 0x3000, 0x3002);
+    TEST_CHECK(run.intno == V8M_EXCP_PREFETCH_ABORT);
+    TEST_CHECK(run.pc == 0x3000);
+
+    uc_assert_err(UC_ERR_ARG,
+                  uc_ctl(uc, UC_CTL_READ(UC_CTL_ARM_SECURITY, 1), &ignored));
+    uc_assert_err(UC_ERR_ARG,
+                  uc_ctl(uc, UC_CTL_READ(UC_CTL_ARM_IDAU, 1), &ignored));
+    OK(uc_close(uc));
+}
+
+static void test_arm_v8m_security_off(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    V8M_IDAU idau = {0x3000, 0x33ff, 0};
+
+    uc = test_arm_v8m_bxns_setup(&run, &idau);
+    test_arm_v8m_run(uc, &run, code_start, 0x3002);
+    TEST_CHECK(run.intno == V8M_EXCP_PREFETCH_ABORT);
+    TEST_CHECK(idau.calls == 0);
+
+    OK(uc_ctl_arm_security(uc, 1));
+    test_arm_v8m_run(uc, &run, 0x3000, 0x3002);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(idau.calls > 0);
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
@@ -1993,4 +2122,6 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
               test_arm_exit_after_insn_enable_flushes},
              {"test_arm_exit_after_insn_other_arch",
               test_arm_exit_after_insn_other_arch},
+             {"test_arm_v8m_lookup_on", test_arm_v8m_lookup_on},
+             {"test_arm_v8m_security_off", test_arm_v8m_security_off},
              {NULL, NULL}};

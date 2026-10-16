@@ -162,6 +162,8 @@ public interface UnicornConst {
     public static final int UC_CTL_UC_USE_EXIT_AFTER_INSN = 21;
     public static final int UC_CTL_UC_EXIT_AFTER_INSN = 22;
     public static final int UC_CTL_UC_SLOW_PATH_COUNT = 23;
+    public static final int UC_CTL_ARM_IDAU = 24;
+    public static final int UC_CTL_ARM_SECURITY = 25;
     public static final int UC_CTL_CONTEXT_CPU = 1;
     public static final int UC_CTL_CONTEXT_MEMORY = 2;
 
