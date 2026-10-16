@@ -1606,6 +1606,7 @@
 #define armv7m_nvic_set_pending armv7m_nvic_set_pending_aarch64
 #define helper_v7m_preserve_fp_state helper_v7m_preserve_fp_state_aarch64
 #define write_v7m_exception write_v7m_exception_aarch64
+#define switch_v7m_security_state switch_v7m_security_state_aarch64
 #define helper_v7m_bxns helper_v7m_bxns_aarch64
 #define helper_v7m_blxns helper_v7m_blxns_aarch64
 #define armv7m_nvic_neg_prio_requested armv7m_nvic_neg_prio_requested_aarch64

@@ -2039,6 +2039,60 @@ static void test_arm_v8m_security_off(void)
     OK(uc_close(uc));
 }
 
+static void test_arm_v8m_security_state(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    V8M_IDAU idau = {0x3000, 0x33ff, 0};
+    uint32_t value;
+    char code[] = "\x00\xbf";
+
+    uc = test_arm_v8m_bxns_setup(&run, &idau);
+    OK(uc_reg_read(uc, UC_ARM_REG_SECURE, &value));
+    TEST_CHECK(value == 1);
+
+    value = 0x20001000;
+    OK(uc_reg_write(uc, UC_ARM_REG_MSP, &value));
+    value = 0;
+    OK(uc_reg_write(uc, UC_ARM_REG_SECURE, &value));
+    OK(uc_reg_read(uc, UC_ARM_REG_SECURE, &value));
+    TEST_CHECK(value == 0);
+    OK(uc_reg_read(uc, UC_ARM_REG_MSP, &value));
+    TEST_CHECK(value == 0);
+
+    value = 0x20002000;
+    OK(uc_reg_write(uc, UC_ARM_REG_MSP, &value));
+    value = 0;
+    OK(uc_reg_write(uc, UC_ARM_REG_SECURE, &value));
+    OK(uc_reg_read(uc, UC_ARM_REG_MSP, &value));
+    TEST_CHECK(value == 0x20002000);
+
+    value = 1;
+    OK(uc_reg_write(uc, UC_ARM_REG_SECURE, &value));
+    OK(uc_reg_read(uc, UC_ARM_REG_MSP, &value));
+    TEST_CHECK(value == 0x20001000);
+
+    OK(uc_ctl_arm_security(uc, 1));
+    test_arm_v8m_run(uc, &run, code_start, 0x3002);
+    TEST_CHECK(run.intno == -1);
+    OK(uc_reg_read(uc, UC_ARM_REG_SECURE, &value));
+    TEST_CHECK(value == 0);
+    OK(uc_reg_read(uc, UC_ARM_REG_MSP, &value));
+    TEST_CHECK(value == 0x20002000);
+    OK(uc_close(uc));
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB, code, sizeof(code) - 1,
+                    UC_CPU_ARM_CORTEX_M7);
+    uc_assert_err(UC_ERR_ARG, uc_reg_read(uc, UC_ARM_REG_SECURE, &value));
+    uc_assert_err(UC_ERR_ARG, uc_reg_write(uc, UC_ARM_REG_SECURE, &value));
+    OK(uc_close(uc));
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_ARM, code, sizeof(code) - 1,
+                    UC_CPU_ARM_CORTEX_A15);
+    uc_assert_err(UC_ERR_ARG, uc_reg_read(uc, UC_ARM_REG_SECURE, &value));
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
@@ -2124,4 +2178,5 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
               test_arm_exit_after_insn_other_arch},
              {"test_arm_v8m_lookup_on", test_arm_v8m_lookup_on},
              {"test_arm_v8m_security_off", test_arm_v8m_security_off},
+             {"test_arm_v8m_security_state", test_arm_v8m_security_state},
              {NULL, NULL}};

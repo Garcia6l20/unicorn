@@ -1205,6 +1205,13 @@ void v8m_security_lookup(CPUARMState *env, uint32_t address,
                          MMUAccessType access_type, ARMMMUIdx mmu_idx,
                          V8M_SAttributes *sattrs);
 
+/**
+ * @brief Switch the M-profile security state, swapping the stack pointers
+ * into and out of the other state's bank. No-op when @p new_secstate is the
+ * current state. Does not rebuild the hflags.
+ */
+void switch_v7m_security_state(CPUARMState *env, bool new_secstate);
+
 bool pmsav8_mpu_lookup(CPUARMState *env, uint32_t address,
                        MMUAccessType access_type, ARMMMUIdx mmu_idx,
                        hwaddr *phys_ptr, MemTxAttrs *txattrs,

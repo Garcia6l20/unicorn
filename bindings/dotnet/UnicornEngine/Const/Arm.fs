@@ -190,7 +190,8 @@ module Arm =
     let UC_ARM_REG_ESR = 140
     let UC_ARM_REG_MSPLIM = 141
     let UC_ARM_REG_PSPLIM = 142
-    let UC_ARM_REG_ENDING = 143
+    let UC_ARM_REG_SECURE = 143
+    let UC_ARM_REG_ENDING = 144
 
     // alias registers
     let UC_ARM_REG_R13 = 12
