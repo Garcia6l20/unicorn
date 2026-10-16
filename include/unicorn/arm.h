@@ -232,6 +232,22 @@ typedef enum uc_arm_reg {
      * Extension.
      */
     UC_ARM_REG_SECURE,
+    /**
+     * The v8-M SAU registers. SAU_RBAR and SAU_RLAR access the region
+     * SAU_RNR selects. Writes keep the architectural bits: SAU_CTRL bits
+     * [1:0], SAU_RBAR bits [31:5], SAU_RLAR bits [31:5] and [1:0]. A write of
+     * SAU_RNR at or above the region count is UC_ERR_ARG. Every write but
+     * SAU_RNR flushes the TLB, so the next access of each page is attributed
+     * again. A flush does not unlink chained translation blocks: code chained
+     * inside a page whose fetch the write denies keeps running until the
+     * emulation stops, uc_emu_stop, DSB and ISB included. The SAU
+     * attributes accesses only while uc_ctl_arm_security is on. UC_ERR_ARG
+     * without the Security Extension. Not available on a uc_context.
+     */
+    UC_ARM_REG_SAU_CTRL,
+    UC_ARM_REG_SAU_RNR,
+    UC_ARM_REG_SAU_RBAR,
+    UC_ARM_REG_SAU_RLAR,
     UC_ARM_REG_ENDING, // <-- mark the end of the list or registers
 
     //> alias registers

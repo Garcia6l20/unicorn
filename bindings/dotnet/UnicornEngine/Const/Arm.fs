@@ -191,7 +191,11 @@ module Arm =
     let UC_ARM_REG_MSPLIM = 141
     let UC_ARM_REG_PSPLIM = 142
     let UC_ARM_REG_SECURE = 143
-    let UC_ARM_REG_ENDING = 144
+    let UC_ARM_REG_SAU_CTRL = 144
+    let UC_ARM_REG_SAU_RNR = 145
+    let UC_ARM_REG_SAU_RBAR = 146
+    let UC_ARM_REG_SAU_RLAR = 147
+    let UC_ARM_REG_ENDING = 148
 
     // alias registers
     let UC_ARM_REG_R13 = 12

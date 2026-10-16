@@ -188,7 +188,11 @@ public interface ArmConst {
     public static final int UC_ARM_REG_MSPLIM = 141;
     public static final int UC_ARM_REG_PSPLIM = 142;
     public static final int UC_ARM_REG_SECURE = 143;
-    public static final int UC_ARM_REG_ENDING = 144;
+    public static final int UC_ARM_REG_SAU_CTRL = 144;
+    public static final int UC_ARM_REG_SAU_RNR = 145;
+    public static final int UC_ARM_REG_SAU_RBAR = 146;
+    public static final int UC_ARM_REG_SAU_RLAR = 147;
+    public static final int UC_ARM_REG_ENDING = 148;
 
     // alias registers
     public static final int UC_ARM_REG_R13 = 12;
