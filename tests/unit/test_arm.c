@@ -2978,6 +2978,139 @@ static void test_arm_mmio_attrs_split(void)
     OK(uc_close(uc));
 }
 
+#define V8M_REMOVE_COUNT 100000
+#define V8M_REMOVE_AT 1000
+#define V8M_PTR_BASE 0x8000
+
+typedef struct _V8M_REMOVE {
+    int calls;
+    uint64_t begin;
+} V8M_REMOVE;
+
+static void test_arm_v8m_remove_store(uc_engine *uc, uc_mem_type type,
+                                      uint64_t address, int size,
+                                      int64_t value, void *user_data)
+{
+    V8M_REMOVE *remove = user_data;
+
+    if (++remove->calls == V8M_REMOVE_AT) {
+        OK(uc_ctl_remove_cache(uc, remove->begin, remove->begin + 0x400));
+        OK(uc_emu_stop(uc));
+    }
+}
+
+static void test_arm_v8m_remove_cache_secure_fault(void)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    V8M_RUN run;
+    V8M_REMOVE remove = {0, 0x4000};
+    char code[] = "\x10\x60\x01\x3b\xfc\xd1\x00\xbf";
+
+    uc = test_arm_v8m_ns_open(code, sizeof(code) - 1, &run);
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_WRITE, test_arm_v8m_remove_store,
+                   &remove, code_start + 0x200, code_start + 0x203));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, code_start + 0x200);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, V8M_REMOVE_COUNT);
+    run.intno = -1;
+    OK(uc_emu_start(uc, code_start | 1, code_start + 6, 0,
+                    3 * V8M_REMOVE_COUNT + V8M_STEP_BOUND));
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(remove.calls == V8M_REMOVE_AT);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) ==
+               V8M_REMOVE_COUNT - (V8M_REMOVE_AT - 1));
+    OK(uc_emu_start(uc, test_arm_v8m_get(uc, UC_ARM_REG_PC) | 1,
+                    code_start + 6, 0, 3 * V8M_REMOVE_COUNT + V8M_STEP_BOUND));
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) == 0);
+    TEST_MSG("intno %d pc 0x%x r3 %u", run.intno, run.pc,
+             test_arm_v8m_get(uc, UC_ARM_REG_R3));
+    OK(uc_close(uc));
+}
+
+static uc_engine *test_arm_v8m_ptr_open(V8M_RUN *run, uint8_t *buffer)
+{
+    char code[] = "\x00\xbf\x00\xbf";
+    char target[] = "\x01\x20\x08\x47";
+    uc_engine *uc = test_arm_v8m_open(code, sizeof(code) - 1, run);
+
+    memset(buffer, 0, 0x400);
+    memcpy(buffer, target, sizeof(target) - 1);
+    OK(uc_mem_map_ptr(uc, V8M_PTR_BASE, 0x400, UC_PROT_ALL, buffer));
+    OK(uc_ctl_arm_security(uc, 1));
+    return uc;
+}
+
+static uint32_t test_arm_v8m_ptr_run(uc_engine *uc, V8M_RUN *run)
+{
+    test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, code_start | 1);
+    test_arm_v8m_run(uc, run, V8M_PTR_BASE, code_start + 2);
+    TEST_CHECK(run->intno == -1);
+    return test_arm_v8m_get(uc, UC_ARM_REG_R0);
+}
+
+static uint32_t test_arm_v8m_unfetchable_leg(bool remove)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    uint32_t r0;
+    static uint8_t buffer[0x400];
+
+    uc = test_arm_v8m_ptr_open(&run, buffer);
+    TEST_CHECK(test_arm_v8m_ptr_run(uc, &run) == 1);
+    buffer[0] = 2;
+    test_arm_v8m_reg(uc, UC_ARM_REG_SECURE, 0);
+    if (remove) {
+        OK(uc_ctl_remove_cache(uc, V8M_PTR_BASE, V8M_PTR_BASE + 0x400));
+    }
+    test_arm_v8m_reg(uc, UC_ARM_REG_SECURE, 1);
+    r0 = test_arm_v8m_ptr_run(uc, &run);
+    OK(uc_close(uc));
+    return r0;
+}
+
+static void test_arm_v8m_remove_cache_unfetchable(void)
+{
+    uint32_t removed = test_arm_v8m_unfetchable_leg(true);
+    uint32_t kept = test_arm_v8m_unfetchable_leg(false);
+
+    TEST_CHECK(removed == 2);
+    TEST_CHECK(kept == 1);
+    TEST_MSG("removed r0 %u, without removal r0 %u", removed, kept);
+}
+
+static uint32_t test_arm_v8m_subpage_leg(bool remove)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    uint32_t r0;
+    static uint8_t buffer[0x400];
+
+    uc = test_arm_v8m_ptr_open(&run, buffer);
+    test_arm_v8m_sau_region(uc, 0, V8M_PTR_BASE + 0x100,
+                            (V8M_PTR_BASE + 0x100) | V8M_SAU_ENABLE);
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_CTRL, V8M_SAU_ENABLE);
+    TEST_CHECK(test_arm_v8m_ptr_run(uc, &run) == 1);
+    buffer[0] = 2;
+    if (remove) {
+        OK(uc_ctl_remove_cache(uc, V8M_PTR_BASE, V8M_PTR_BASE + 0x400));
+    }
+    r0 = test_arm_v8m_ptr_run(uc, &run);
+    OK(uc_close(uc));
+    return r0;
+}
+
+static void test_arm_v8m_remove_cache_subpage(void)
+{
+    uint32_t removed = test_arm_v8m_subpage_leg(true);
+    uint32_t kept = test_arm_v8m_subpage_leg(false);
+
+    TEST_CHECK(removed == 2);
+    TEST_CHECK(kept == 1);
+    TEST_MSG("removed r0 %u, without removal r0 %u", removed, kept);
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
@@ -3081,4 +3214,10 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_mmio_attrs_split", test_arm_mmio_attrs_split},
              {"test_arm_mmio_attrs_no_security",
               test_arm_mmio_attrs_no_security},
+             {"test_arm_v8m_remove_cache_secure_fault",
+              test_arm_v8m_remove_cache_secure_fault},
+             {"test_arm_v8m_remove_cache_unfetchable",
+              test_arm_v8m_remove_cache_unfetchable},
+             {"test_arm_v8m_remove_cache_subpage",
+              test_arm_v8m_remove_cache_subpage},
              {NULL, NULL}};

@@ -1129,13 +1129,56 @@ static void uc_tb_flush(struct uc_struct *uc) {
     tb_exec_lock(uc);
 }
 
-static void uc_invalidate_tb(struct uc_struct *uc, uint64_t start_addr, size_t len) 
+static bool uc_cpu_is_m_profile(CPUArchState *env)
+{
+#ifdef TARGET_ARM
+    return arm_feature(env, ARM_FEATURE_M);
+#endif
+    return false;
+}
+
+static bool uc_bus_ram_addr(struct uc_struct *uc, uint64_t address,
+                            tb_page_addr_t *ram)
+{
+    CPUArchState *env = uc->cpu->env_ptr;
+    MemoryRegion *mr;
+    hwaddr xlat = 0;
+    hwaddr len = 1;
+
+    if (!uc_cpu_is_m_profile(env)) {
+        return false;
+    }
+    mr = address_space_translate(&uc->address_space_memory, address, &xlat,
+                                 &len, false, MEMTXATTRS_UNSPECIFIED);
+    *ram = memory_region_is_ram(mr) ? memory_region_get_ram_addr(mr) + xlat
+                                    : (tb_page_addr_t)-1;
+    return true;
+}
+
+static void uc_invalidate_tb(struct uc_struct *uc, uint64_t start_addr,
+                             size_t len)
 {
     tb_page_addr_t start, end;
+    int exception_index = uc->cpu->exception_index;
+
+    if (uc_bus_ram_addr(uc, start_addr, &start)) {
+        uint64_t page;
+
+        end = start + len;
+        if (start != (tb_page_addr_t)-1 && start <= end) {
+            tb_invalidate_phys_range(uc, start, end);
+        }
+        for (page = start_addr & TARGET_PAGE_MASK; page < start_addr + len;
+             page += TARGET_PAGE_SIZE) {
+            tb_flush_jmp_cache(uc->cpu, page);
+        }
+        return;
+    }
 
     uc->nested_level++;
     if (sigsetjmp(uc->jmp_bufs[uc->nested_level - 1], 0) != 0) {
         // We a get cpu fault in get_page_addr_code, ignore it.
+        uc->cpu->exception_index = exception_index;
         uc->nested_level--;
         return;
     }
