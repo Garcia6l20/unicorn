@@ -4004,6 +4004,46 @@ static void test_arm_bus_filter_no_security(void)
     }
 }
 
+static uint32_t test_arm_v8m_nsacr_fpca(uint32_t nsacr)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    uint32_t control;
+    char code[] = "\x80\xf3\x14\x88";
+
+    uc = test_arm_v8m_ns_open(code, sizeof(code) - 1, &run);
+    test_arm_v8m_reg(uc, UC_ARM_REG_NSACR, nsacr);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R0, V8M_CONTROL_FPCA);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 4);
+    TEST_CHECK(run.intno == -1);
+    control = test_arm_v8m_get(uc, UC_ARM_REG_CONTROL_S);
+    OK(uc_close(uc));
+    return control & V8M_CONTROL_FPCA;
+}
+
+static void test_arm_v8m_nsacr(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    char code[] = "\x00\xbf";
+    uint32_t ignored = 0;
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_NSACR) == 0);
+    test_arm_v8m_reg(uc, UC_ARM_REG_NSACR, 0xffffffff);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_NSACR) == 0xcff);
+    OK(uc_close(uc));
+
+    TEST_CHECK(test_arm_v8m_nsacr_fpca(0xc00) == V8M_CONTROL_FPCA);
+    TEST_CHECK(test_arm_v8m_nsacr_fpca(0) == 0);
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB, code, sizeof(code) - 1,
+                    UC_CPU_ARM_CORTEX_M7);
+    uc_assert_err(UC_ERR_ARG, uc_reg_read(uc, UC_ARM_REG_NSACR, &ignored));
+    uc_assert_err(UC_ERR_ARG, uc_reg_write(uc, UC_ARM_REG_NSACR, &ignored));
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
@@ -4143,4 +4183,5 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_bus_filter_ram_only", test_arm_bus_filter_ram_only},
              {"test_arm_bus_filter_no_security",
               test_arm_bus_filter_no_security},
+             {"test_arm_v8m_nsacr", test_arm_v8m_nsacr},
              {NULL, NULL}};

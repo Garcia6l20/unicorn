@@ -214,7 +214,8 @@ public interface ArmConst {
     public static final int UC_ARM_REG_PSPLIM_NS = 167;
     public static final int UC_ARM_REG_FAULT_STATUS = 168;
     public static final int UC_ARM_REG_FAULT_ADDRESS = 169;
-    public static final int UC_ARM_REG_ENDING = 170;
+    public static final int UC_ARM_REG_NSACR = 170;
+    public static final int UC_ARM_REG_ENDING = 171;
 
     // alias registers
     public static final int UC_ARM_REG_R13 = 12;

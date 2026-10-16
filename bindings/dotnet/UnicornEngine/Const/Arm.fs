@@ -217,7 +217,8 @@ module Arm =
     let UC_ARM_REG_PSPLIM_NS = 167
     let UC_ARM_REG_FAULT_STATUS = 168
     let UC_ARM_REG_FAULT_ADDRESS = 169
-    let UC_ARM_REG_ENDING = 170
+    let UC_ARM_REG_NSACR = 170
+    let UC_ARM_REG_ENDING = 171
 
     // alias registers
     let UC_ARM_REG_R13 = 12

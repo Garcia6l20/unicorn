@@ -572,6 +572,13 @@ uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
             CHECK_REG_TYPE(uint32_t);
             *(uint32_t *)value = *arm_v8m_fpccr(env, regid);
             break;
+        case UC_ARM_REG_NSACR:
+            if (!arm_v8m_has_security(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            *(uint32_t *)value = env->v7m.nsacr;
+            break;
         case UC_ARM_REG_FAULT_STATUS:
             CHECK_REG_TYPE(uint32_t);
             *(uint32_t *)value = env->exception.fsr;
@@ -868,6 +875,13 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
             }
             CHECK_REG_TYPE(uint32_t);
             *arm_v8m_fpccr(env, regid) = *(uint32_t *)value;
+            break;
+        case UC_ARM_REG_NSACR:
+            if (!arm_v8m_has_security(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            env->v7m.nsacr = *(uint32_t *)value & 0xcff;
             break;
         case UC_ARM_REG_FAULT_STATUS:
         case UC_ARM_REG_FAULT_ADDRESS:

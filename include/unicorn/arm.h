@@ -299,6 +299,14 @@ typedef enum uc_arm_reg {
      */
     UC_ARM_REG_FAULT_STATUS,
     UC_ARM_REG_FAULT_ADDRESS,
+    /**
+     * The v8-M NSACR, the Non-secure access control of the coprocessors.
+     * The engine reads CP10 at a Non-secure MSR CONTROL, which may change
+     * CONTROL.FPCA only when CP10 is set. A write keeps CP0 to CP7, CP10
+     * and CP11, bits [7:0] and [11:10]. The engine resets it to 0 with the
+     * Security Extension. UC_ERR_ARG without the Security Extension. Not
+     * available on a uc_context. */
+    UC_ARM_REG_NSACR,
     UC_ARM_REG_ENDING, // <-- mark the end of the list or registers
 
     //> alias registers
