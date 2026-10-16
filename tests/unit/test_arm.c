@@ -2319,6 +2319,109 @@ static void test_arm_v8m_sau_subpage(void)
     OK(uc_close(uc));
 }
 
+#define V8M_EXCP_NOCP 17
+#define V8M_CONTROL_FPCA (1u << 2)
+#define V8M_CONTROL_SFPA (1u << 3)
+#define V8M_CPACR_CP10_CP11 0x00f00000u
+#define V8M_FPCCR_S_RESET 0xc0000004u
+#define V8M_FPCCR_S_NO_LSPEN 0x80000004u
+#define V8M_FRAME 0x4000
+#define V8M_UNTOUCHED 0xa5a5a5a5u
+
+static uint32_t test_arm_v8m_word(uc_engine *uc, uint64_t address)
+{
+    uint32_t value = 0;
+
+    OK(uc_mem_read(uc, address, &value, sizeof(value)));
+    return value;
+}
+
+static uc_engine *test_arm_v8m_fp_open(V8M_RUN *run, uint32_t cpacr_s)
+{
+    char code[] = "\x00\xee\x10\x2a\xe1\xee\x10\x3a\x20\xec\x00\x0a";
+    char vlldm[] = "\x30\xec\x00\x0a";
+    uint32_t fill = V8M_UNTOUCHED;
+    uc_engine *uc = test_arm_v8m_open(code, sizeof(code) - 1, run);
+    uint64_t at;
+
+    OK(uc_mem_write(uc, code_start + 0x10, vlldm, sizeof(vlldm) - 1));
+    for (at = V8M_FRAME; at < V8M_FRAME + 0x88; at += 4) {
+        OK(uc_mem_write(uc, at, &fill, sizeof(fill)));
+    }
+    test_arm_v8m_reg(uc, UC_ARM_REG_R0, V8M_FRAME);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, 0x3f800000);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, 0x00c00000);
+    test_arm_v8m_reg(uc, UC_ARM_REG_CPACR_S, cpacr_s);
+    return uc;
+}
+
+static void test_arm_v8m_fp_context(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    char code[] = "\x00\xbf";
+    uint32_t ignored = 0;
+    uint32_t saved;
+
+    uc = test_arm_v8m_fp_open(&run, V8M_CPACR_CP10_CP11);
+    test_arm_v8m_reg(uc, UC_ARM_REG_FPCCR_S, V8M_FPCCR_S_NO_LSPEN);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 12);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(test_arm_v8m_word(uc, V8M_FRAME) == 0x3f800000);
+    saved = test_arm_v8m_word(uc, V8M_FRAME + 0x40);
+    TEST_CHECK(saved == 0x00c00000);
+    TEST_MSG("frame FPSCR 0x%08x", saved);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_FPCCR_S) ==
+               V8M_FPCCR_S_NO_LSPEN);
+    TEST_CHECK((test_arm_v8m_get(uc, UC_ARM_REG_CONTROL) & V8M_CONTROL_FPCA) ==
+               0);
+    test_arm_v8m_reg(uc, UC_ARM_REG_S0, 0);
+    test_arm_v8m_run(uc, &run, code_start + 0x10, code_start + 0x14);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_S0) == 0x3f800000);
+    OK(uc_close(uc));
+
+    uc = test_arm_v8m_fp_open(&run, V8M_CPACR_CP10_CP11);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_FPCCR_S) == V8M_FPCCR_S_RESET);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 12);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(test_arm_v8m_word(uc, V8M_FRAME) == V8M_UNTOUCHED);
+    TEST_CHECK(test_arm_v8m_word(uc, V8M_FRAME + 0x40) == V8M_UNTOUCHED);
+    OK(uc_close(uc));
+
+    uc = test_arm_v8m_fp_open(&run, 0);
+    test_arm_v8m_reg(uc, UC_ARM_REG_FPCCR_S, V8M_FPCCR_S_NO_LSPEN);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 12);
+    TEST_CHECK(run.intno == V8M_EXCP_NOCP);
+    TEST_CHECK(run.pc == code_start + 8);
+    TEST_CHECK(test_arm_v8m_word(uc, V8M_FRAME) == V8M_UNTOUCHED);
+    TEST_CHECK((test_arm_v8m_get(uc, UC_ARM_REG_CONTROL) &
+                (V8M_CONTROL_FPCA | V8M_CONTROL_SFPA)) ==
+               (V8M_CONTROL_FPCA | V8M_CONTROL_SFPA));
+
+    test_arm_v8m_reg(uc, UC_ARM_REG_CPACR_S, 0xffffffff);
+    test_arm_v8m_reg(uc, UC_ARM_REG_CPACR_NS, 0x00500000);
+    test_arm_v8m_reg(uc, UC_ARM_REG_FPCCR_S, 0x12345678);
+    test_arm_v8m_reg(uc, UC_ARM_REG_FPCCR_NS, 0x87654321);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_CPACR_S) == V8M_CPACR_CP10_CP11);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_CPACR_NS) == 0x00500000);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_FPCCR_S) == 0x12345678);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_FPCCR_NS) == 0x87654321);
+    OK(uc_close(uc));
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB, code, sizeof(code) - 1,
+                    UC_CPU_ARM_CORTEX_M7);
+    uc_assert_err(UC_ERR_ARG, uc_reg_read(uc, UC_ARM_REG_CPACR_S, &ignored));
+    uc_assert_err(UC_ERR_ARG, uc_reg_write(uc, UC_ARM_REG_FPCCR_S, &ignored));
+    uc_assert_err(UC_ERR_ARG, uc_reg_read(uc, UC_ARM_REG_FPCCR_NS, &ignored));
+    OK(uc_close(uc));
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_ARM, code, sizeof(code) - 1,
+                    UC_CPU_ARM_CORTEX_A15);
+    uc_assert_err(UC_ERR_ARG, uc_reg_read(uc, UC_ARM_REG_CPACR_NS, &ignored));
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
@@ -2410,4 +2513,5 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_v8m_sau_chained_tb", test_arm_v8m_sau_chained_tb},
              {"test_arm_v8m_sau_isb", test_arm_v8m_sau_isb},
              {"test_arm_v8m_sau_subpage", test_arm_v8m_sau_subpage},
+             {"test_arm_v8m_fp_context", test_arm_v8m_fp_context},
              {NULL, NULL}};

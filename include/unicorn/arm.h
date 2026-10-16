@@ -248,6 +248,17 @@ typedef enum uc_arm_reg {
     UC_ARM_REG_SAU_RNR,
     UC_ARM_REG_SAU_RBAR,
     UC_ARM_REG_SAU_RLAR,
+    /**
+     * The v8-M CPACR and FPCCR of each security state, the engine fields
+     * VLSTM and VLLDM read. A CPACR write keeps CP10 and CP11, bits
+     * [23:20]. An FPCCR write is stored as written: the engine keeps the
+     * unbanked FPCCR bits in FPCCR_S. Every write rebuilds the hflags.
+     * UC_ERR_ARG without the FPU or without the Security Extension.
+     */
+    UC_ARM_REG_CPACR_S,
+    UC_ARM_REG_CPACR_NS,
+    UC_ARM_REG_FPCCR_S,
+    UC_ARM_REG_FPCCR_NS,
     UC_ARM_REG_ENDING, // <-- mark the end of the list or registers
 
     //> alias registers
