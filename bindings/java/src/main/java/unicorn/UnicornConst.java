@@ -117,6 +117,7 @@ public interface UnicornConst {
     public static final int UC_HOOK_EDGE_GENERATED = 32768;
     public static final int UC_HOOK_TCG_OPCODE = 65536;
     public static final int UC_HOOK_TLB_FILL = 131072;
+    public static final int UC_HOOK_BLOCK_ICOUNT = 262144;
     public static final int UC_HOOK_MEM_UNMAPPED = 112;
     public static final int UC_HOOK_MEM_PROT = 896;
     public static final int UC_HOOK_MEM_READ_INVALID = 144;
@@ -160,6 +161,7 @@ public interface UnicornConst {
     public static final int UC_CTL_UC_DROP_STORE = 20;
     public static final int UC_CTL_UC_USE_EXIT_AFTER_INSN = 21;
     public static final int UC_CTL_UC_EXIT_AFTER_INSN = 22;
+    public static final int UC_CTL_UC_SLOW_PATH_COUNT = 23;
     public static final int UC_CTL_CONTEXT_CPU = 1;
     public static final int UC_CTL_CONTEXT_MEMORY = 2;
 
