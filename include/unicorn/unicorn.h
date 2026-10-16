@@ -695,6 +695,26 @@ typedef enum uc_control_type {
     // Read: @args = (uint64_t*)
     UC_CTL_UC_EXIT_AFTER_INSN,
     UC_CTL_UC_SLOW_PATH_COUNT,
+    /**
+     * Install the IDAU of the v8-M security lookup, a uc_arm_idau_cb and its
+     * user pointer. A NULL callback removes it. Flushes the TLB. UC_ARCH_ARM
+     * only, UC_ERR_ARG on other architectures and for a read.
+     * Write: @args = (uc_arm_idau_cb, void *)
+     */
+    UC_CTL_ARM_IDAU,
+    /**
+     * Turn the v8-M security lookup on, nonzero, or off, 0. Off by default:
+     * the lookup then returns before reading the SAU or the IDAU, and every
+     * address is Secure. On, accesses are attributed through the SAU and the
+     * IDAU at TLB fill, as SecurityCheck() of the ARMv8-M ARM does. Flushes
+     * the TLB, so no page keeps a verdict from before the change. A flush
+     * does not unlink chained translation blocks: code already chained
+     * inside a page keeps running until the emulation stops, uc_emu_stop,
+     * even when its page is no longer fetchable. UC_ARCH_ARM only,
+     * UC_ERR_ARG on other architectures and for a read.
+     * Write: @args = (int)
+     */
+    UC_CTL_ARM_SECURITY,
 } uc_control_type;
 
 /*
@@ -801,6 +821,11 @@ See sample_ctl.c for a detailed example.
     uc_ctl(uc, UC_CTL_READ(UC_CTL_UC_SLOW_PATH_COUNT, 1), (ptr))
 #define uc_ctl_slow_path_count_reset(uc)                                       \
     uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_SLOW_PATH_COUNT, 0))
+#define uc_ctl_arm_idau(uc, cb, user)                                          \
+    uc_ctl(uc, UC_CTL_WRITE(UC_CTL_ARM_IDAU, 2), (uc_arm_idau_cb)(cb),         \
+           (void *)(user))
+#define uc_ctl_arm_security(uc, enabled)                                       \
+    uc_ctl(uc, UC_CTL_WRITE(UC_CTL_ARM_SECURITY, 1), (int)(enabled))
 
 // Opaque storage for CPU context, used with uc_context_*()
 struct uc_context;

@@ -404,6 +404,9 @@ struct uc_struct {
     uint64_t exit_after_insn_taken;
     uint32_t mem_alias_count;
     uint64_t slow_path_ram_accesses;
+    uc_arm_idau_cb arm_idau;
+    void *arm_idau_user;
+    bool arm_security;
 
     int use_exits;
     uint64_t exits[UC_MAX_NESTED_LEVEL]; // When multiple exits is not enabled.

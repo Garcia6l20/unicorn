@@ -244,6 +244,25 @@ typedef enum uc_arm_insn {
     UC_ARM_INS_ENDING, // mark the end of the list of insn
 } uc_arm_insn;
 
+/**
+ * @brief IDAU of the v8-M security lookup, installed with uc_ctl_arm_idau.
+ *
+ * Called while the lookup is on, uc_ctl_arm_security, for each address the
+ * lookup attributes: at TLB fill, and for TT. On entry @p region is -1,
+ * @p exempt is false, @p ns and @p nsc are true, the result of no IDAU.
+ *
+ * @param user the pointer passed to uc_ctl_arm_idau.
+ * @param address the address attributed.
+ * @param region the IDAU region number, 0 to 255, or -1 for no valid region.
+ * @param exempt true when @p address is exempt from SAU and IDAU checks.
+ * @param ns true when the IDAU attributes @p address Non-secure.
+ * @param nsc true when a Secure @p address is Non-secure callable.
+ *
+ * The callback runs inside the TLB fill and must not call the engine.
+ */
+typedef void (*uc_arm_idau_cb)(void *user, uint32_t address, int *region,
+                               bool *exempt, bool *ns, bool *nsc);
+
 #ifdef __cplusplus
 }
 #endif

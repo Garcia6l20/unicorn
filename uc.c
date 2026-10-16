@@ -2805,6 +2805,15 @@ static inline gboolean uc_read_exit_iter(gpointer key, gpointer val,
     return false;
 }
 
+static void flush_tlb_if_init(uc_engine *uc)
+{
+    if (uc->init_done) {
+        save_jit_state(uc);
+        uc->tcg_flush_tlb(uc);
+        restore_jit_state(uc);
+    }
+}
+
 UNICORN_EXPORT
 uc_err uc_ctl(uc_engine *uc, uc_control_type control, ...)
 {
@@ -3316,6 +3325,25 @@ uc_err uc_ctl(uc_engine *uc, uc_control_type control, ...)
         } else {
             err = UC_ERR_ARG;
         }
+        break;
+
+    case UC_CTL_ARM_IDAU:
+        if (rw != UC_CTL_IO_WRITE || uc->arch != UC_ARCH_ARM) {
+            err = UC_ERR_ARG;
+            break;
+        }
+        uc->arm_idau = va_arg(args, uc_arm_idau_cb);
+        uc->arm_idau_user = va_arg(args, void *);
+        flush_tlb_if_init(uc);
+        break;
+
+    case UC_CTL_ARM_SECURITY:
+        if (rw != UC_CTL_IO_WRITE || uc->arch != UC_ARCH_ARM) {
+            err = UC_ERR_ARG;
+            break;
+        }
+        uc->arm_security = va_arg(args, int) != 0;
+        flush_tlb_if_init(uc);
         break;
 
     default:
