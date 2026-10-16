@@ -413,6 +413,10 @@ struct uc_struct {
     uc_arm_idau_cb arm_idau;
     void *arm_idau_user;
     bool arm_security;
+    uc_cb_bus_page_t bus_page_cb;
+    uc_cb_bus_access_t bus_access_cb;
+    void *bus_filter_user;
+    bool bus_fill_filter;
 
     int use_exits;
     uint64_t exits[UC_MAX_NESTED_LEVEL]; // When multiple exits is not enabled.

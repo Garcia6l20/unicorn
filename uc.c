@@ -3413,6 +3413,29 @@ uc_err uc_ctl(uc_engine *uc, uc_control_type control, ...)
         flush_tlb_if_init(uc);
         break;
 
+    case UC_CTL_BUS_FILTER: {
+        uc_cb_bus_page_t page_cb;
+        uc_cb_bus_access_t access_cb;
+        void *user;
+
+        if (rw != UC_CTL_IO_WRITE || uc->arch != UC_ARCH_ARM) {
+            err = UC_ERR_ARG;
+            break;
+        }
+        page_cb = va_arg(args, uc_cb_bus_page_t);
+        access_cb = va_arg(args, uc_cb_bus_access_t);
+        user = va_arg(args, void *);
+        if ((page_cb == NULL) != (access_cb == NULL)) {
+            err = UC_ERR_ARG;
+            break;
+        }
+        uc->bus_page_cb = page_cb;
+        uc->bus_access_cb = access_cb;
+        uc->bus_filter_user = user;
+        flush_tlb_if_init(uc);
+        break;
+    }
+
     default:
         err = UC_ERR_ARG;
         break;

@@ -854,6 +854,7 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
     int asidx = cpu_asidx_from_attrs(cpu, attrs);
     int wp_flags;
     bool is_ram;
+    bool bus_filter;
 
     // assert_cpu_is_self(cpu);
 
@@ -881,6 +882,7 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
 
     is_ram = memory_region_is_ram(section->mr);
     // is_romd = memory_region_is_romd(section->mr);
+    bus_filter = is_ram && cpu->uc->bus_fill_filter;
 
     if (is_ram) {
         /* RAM and ROMD both have associated host memory. */
@@ -964,13 +966,14 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
      */
     desc->iotlb[index].addr = iotlb - vaddr_page;
     desc->iotlb[index].attrs = attrs;
+    desc->iotlb[index].bus_filter = bus_filter;
 
     /* Now calculate the new entry */
     tn.addend = addend - vaddr_page;
     tn.paddr = paddr_page;
     if (prot & PAGE_READ) {
         tn.addr_read = address;
-        if ((wp_flags & BP_MEM_READ) ||
+        if ((wp_flags & BP_MEM_READ) || bus_filter ||
             uc_mem_hooks_cover(cpu->uc, UC_HOOK_MEM_READ_IDX, paddr_page,
                                paddr_page + TARGET_PAGE_SIZE - 1) ||
             uc_mem_hooks_cover(cpu->uc, UC_HOOK_MEM_READ_AFTER_IDX, paddr_page,
@@ -993,7 +996,7 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
         if (prot & PAGE_WRITE_INV) {
             tn.addr_write |= TLB_INVALID_MASK;
         }
-        if ((wp_flags & BP_MEM_WRITE) ||
+        if ((wp_flags & BP_MEM_WRITE) || bus_filter ||
             uc_mem_hooks_cover(cpu->uc, UC_HOOK_MEM_WRITE_IDX, paddr_page,
                                paddr_page + TARGET_PAGE_SIZE - 1)) {
             tn.addr_write |= TLB_WATCHPOINT;
@@ -1568,6 +1571,30 @@ static inline void tlb_hook_state_restore(CPUArchState *env,
 #endif
 }
 
+static bool bus_filter_allows(CPUArchState *env, CPUIOTLBEntry *iotlbentry,
+                              target_ulong addr, hwaddr paddr, unsigned size,
+                              MMUAccessType access_type, int mmu_idx,
+                              uint64_t *value, uintptr_t retaddr)
+{
+    struct uc_struct *uc = env->uc;
+    CPUState *cpu = env_cpu(env);
+    CPUClass *cc = CPU_GET_CLASS(cpu);
+    uc_mem_attrs bus = {iotlbentry->attrs.secure, !iotlbentry->attrs.user};
+    uc_mem_type type =
+        access_type == MMU_DATA_STORE ? UC_MEM_WRITE : UC_MEM_READ;
+    int verdict = uc->bus_access_cb(uc, paddr, size, bus, type, value,
+                                    uc->bus_filter_user);
+
+    if (verdict == UC_BUS_ALLOW) {
+        return true;
+    }
+    if (verdict == UC_BUS_FAULT && cc->do_transaction_failed) {
+        cc->do_transaction_failed(cpu, paddr, addr, size, access_type, mmu_idx,
+                                  iotlbentry->attrs, MEMTX_ERROR, retaddr);
+    }
+    return false;
+}
+
 static inline uint64_t
 load_memop(const void *haddr, MemOp op)
 {
@@ -1865,6 +1892,15 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
             /* On watchpoint hit, this will longjmp out.  */
             cpu_check_watchpoint(env_cpu(env), addr, size,
                                  iotlbentry->attrs, BP_MEM_READ, retaddr);
+            if (iotlbentry->bus_filter && !code_read) {
+                uint64_t value = 0;
+
+                if (!bus_filter_allows(env, iotlbentry, addr, paddr, size,
+                                       access_type, mmu_idx, &value, retaddr)) {
+                    res = value & MAKE_64BIT_MASK(0, size * 8);
+                    goto _out;
+                }
+            }
         }
 
         need_swap = size > 1 && (tlb_addr & TLB_BSWAP);
@@ -2434,6 +2470,15 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
             /* On watchpoint hit, this will longjmp out.  */
             cpu_check_watchpoint(env_cpu(env), addr, size,
                                  iotlbentry->attrs, BP_MEM_WRITE, retaddr);
+            if (iotlbentry->bus_filter) {
+                uint64_t value = val;
+
+                if (!bus_filter_allows(env, iotlbentry, addr, paddr, size,
+                                       MMU_DATA_STORE, mmu_idx, &value,
+                                       retaddr)) {
+                    return;
+                }
+            }
         }
 
         need_swap = size > 1 && (tlb_addr & TLB_BSWAP);

@@ -95,6 +95,12 @@ public interface UnicornConst {
     public static final int UC_MEM_READ_PROT = 23;
     public static final int UC_MEM_FETCH_PROT = 24;
     public static final int UC_MEM_READ_AFTER = 25;
+    public static final int UC_BUS_FILTER_DATA = 1;
+    public static final int UC_BUS_DENY_FETCH = 2;
+
+    public static final int UC_BUS_ALLOW = 0;
+    public static final int UC_BUS_RAZ_WI = 1;
+    public static final int UC_BUS_FAULT = 2;
 
     public static final int UC_TCG_OP_SUB = 0;
     public static final int UC_TCG_OP_FLAG_CMP = 1;
@@ -164,6 +170,7 @@ public interface UnicornConst {
     public static final int UC_CTL_UC_SLOW_PATH_COUNT = 23;
     public static final int UC_CTL_ARM_IDAU = 24;
     public static final int UC_CTL_ARM_SECURITY = 25;
+    public static final int UC_CTL_BUS_FILTER = 26;
     public static final int UC_CTL_CONTEXT_CPU = 1;
     public static final int UC_CTL_CONTEXT_MEMORY = 2;
 

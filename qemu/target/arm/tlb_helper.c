@@ -142,6 +142,28 @@ void arm_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr,
     arm_deliver_fault(cpu, addr, access_type, mmu_idx, &fi);
 }
 
+static unsigned arm_bus_page_verdict(CPUState *cs, hwaddr phys_addr,
+                                     MemTxAttrs attrs,
+                                     MMUAccessType access_type)
+{
+    struct uc_struct *uc = cs->uc;
+    MemoryRegion *mr;
+    uc_mem_attrs bus = {attrs.secure, !attrs.user};
+    uc_mem_type type = access_type == MMU_INST_FETCH   ? UC_MEM_FETCH
+                       : access_type == MMU_DATA_STORE ? UC_MEM_WRITE
+                                                       : UC_MEM_READ;
+
+    if (likely(!uc->bus_page_cb)) {
+        return 0;
+    }
+    mr = uc->memory_mapping(uc, phys_addr);
+    if (mr == NULL || !memory_region_is_ram(mr)) {
+        return 0;
+    }
+    return uc->bus_page_cb(uc, phys_addr & TARGET_PAGE_MASK, phys_addr, bus,
+                           type, uc->bus_filter_user);
+}
+
 bool arm_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
                       MMUAccessType access_type, int mmu_idx,
                       bool probe, uintptr_t retaddr)
@@ -165,6 +187,21 @@ bool arm_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
                         core_to_arm_mmu_idx(&cpu->env, mmu_idx),
                         &phys_addr, &attrs, &prot, &page_size, &fi, NULL);
     if (likely(!ret)) {
+        unsigned verdict =
+            arm_bus_page_verdict(cs, phys_addr, attrs, access_type);
+
+        if (verdict & UC_BUS_DENY_FETCH) {
+            if (access_type == MMU_INST_FETCH) {
+                if (probe) {
+                    return false;
+                }
+                fi.type = ARMFault_SyncExternal;
+                fi.ea = arm_extabort_type(MEMTX_ERROR);
+                cpu_restore_state(cs, retaddr, true);
+                arm_deliver_fault(cpu, address, access_type, mmu_idx, &fi);
+            }
+            prot &= ~PAGE_EXEC;
+        }
         /*
          * Map a single [sub]page. Regions smaller than our declared
          * target page size are handled specially, so for those we
@@ -174,8 +211,10 @@ bool arm_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
             phys_addr &= TARGET_PAGE_MASK;
             address &= TARGET_PAGE_MASK;
         }
+        uc->bus_fill_filter = (verdict & UC_BUS_FILTER_DATA) != 0;
         tlb_set_page_with_attrs(cs, address, phys_addr, attrs,
                                 prot, mmu_idx, page_size);
+        uc->bus_fill_filter = false;
         return true;
     } else if (probe) {
         return false;

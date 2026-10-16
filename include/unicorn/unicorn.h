@@ -394,6 +394,83 @@ typedef void (*uc_cb_mmio_write_attrs_t)(uc_engine *uc, uint64_t offset,
                                          unsigned size, uint64_t value,
                                          uc_mem_attrs attrs, void *user_data);
 
+/**
+ * @brief Page verdict bits of a uc_cb_bus_page_t.
+ * UC_BUS_FILTER_DATA sends every data load and store of the page through
+ * the uc_cb_bus_access_t. UC_BUS_DENY_FETCH makes an instruction fetch from
+ * the page a prefetch abort, an external abort, EXCP_PREFETCH_ABORT. 0
+ * leaves the page on the fast path. */
+typedef enum uc_bus_page_verdict {
+    UC_BUS_FILTER_DATA = 1,
+    UC_BUS_DENY_FETCH = 2,
+} uc_bus_page_verdict;
+
+/**
+ * @brief Access verdicts of a uc_cb_bus_access_t.
+ * UC_BUS_ALLOW performs the access. UC_BUS_RAZ_WI makes a load return the
+ * value the callback left in its @p value, 0 unless it wrote one, and
+ * drops a store, memory unchanged. UC_BUS_FAULT raises a precise external
+ * abort, EXCP_DATA_ABORT, with the access not performed. */
+typedef enum uc_bus_access_verdict {
+    UC_BUS_ALLOW = 0,
+    UC_BUS_RAZ_WI = 1,
+    UC_BUS_FAULT = 2,
+} uc_bus_access_verdict;
+
+/**
+ * @brief Page callback of uc_ctl_bus_filter(), called at TLB fill.
+ * Called for a RAM page only, mapped with uc_mem_map, uc_mem_map_ptr or
+ * uc_mem_map_alias, never for MMIO. The verdict holds for the TLB entry the
+ * fill installs, which is per MMU index and per page, until the next TLB
+ * flush. One fill installs the read, write and fetch entries together, so
+ * the callback returns both bits for the page and @p attrs whatever
+ * @p access_type is. A fetch fill with UC_BUS_DENY_FETCH faults and
+ * installs nothing, a data fill with it installs the page not executable.
+ * The callback runs inside the TLB fill and must not call the engine.
+ * @param uc The engine.
+ * @param page Bus address of the page, aligned to the TLB page size.
+ * @param address Bus address of the access that caused the fill, inside
+ *        @p page. For a fetch fill the address of the fetched instruction.
+ *        The verdict still holds for the whole page.
+ * @param attrs Transaction attributes of the fill, after the security
+ *        lookup: a Secure core reading a page an SAU region makes
+ *        Non-secure fills with secure false. A core without the Security
+ *        Extension reads secure false.
+ * @param access_type UC_MEM_READ, UC_MEM_WRITE or UC_MEM_FETCH, the access
+ *        that caused the fill.
+ * @param user_data User data passed to uc_ctl_bus_filter().
+ * @return An OR of UC_BUS_FILTER_DATA and UC_BUS_DENY_FETCH, or 0. */
+typedef unsigned (*uc_cb_bus_page_t)(uc_engine *uc, uint64_t page,
+                                     uint64_t address, uc_mem_attrs attrs,
+                                     uc_mem_type access_type, void *user_data);
+
+/**
+ * @brief Access callback of uc_ctl_bus_filter(), called for each data load
+ * and store of a page whose verdict has UC_BUS_FILTER_DATA.
+ * Called after the UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE and
+ * UC_HOOK_MEM_WRITE_PROT hooks of the access and before the RAM access. An
+ * unaligned load is split into aligned parts, an unaligned store into
+ * bytes, and each part calls the callback. Never called for an instruction
+ * fetch. Accesses the CPU makes on its own, such as M-profile exception
+ * stacking, do not reach the TLB and are not filtered. The callback must
+ * not call the engine.
+ * @param uc The engine.
+ * @param address Bus address of the access, or of the aligned part of an
+ *        unaligned access: a word load at 0x4002 calls with 0x4000 and
+ *        0x4004, and a UC_BUS_FAULT on a part reports that part's address.
+ * @param size Bytes accessed.
+ * @param attrs Transaction attributes of the TLB entry, those the page
+ *        callback saw.
+ * @param access_type UC_MEM_READ or UC_MEM_WRITE.
+ * @param value For a store, the value stored. For a load, 0 on entry and
+ *        the value read with UC_BUS_RAZ_WI.
+ * @param user_data User data passed to uc_ctl_bus_filter().
+ * @return UC_BUS_ALLOW, UC_BUS_RAZ_WI or UC_BUS_FAULT. */
+typedef int (*uc_cb_bus_access_t)(uc_engine *uc, uint64_t address,
+                                  unsigned size, uc_mem_attrs attrs,
+                                  uc_mem_type access_type, uint64_t *value,
+                                  void *user_data);
+
 // These are all op codes we support to hook for UC_HOOK_TCG_OP_CODE.
 // Be cautious since it may bring much more overhead than UC_HOOK_CODE without
 // proper flags.
@@ -766,6 +843,24 @@ typedef enum uc_control_type {
      * Write: @args = (int)
      */
     UC_CTL_ARM_SECURITY,
+    /**
+     * Install the bus filter of RAM pages, a uc_cb_bus_page_t, a
+     * uc_cb_bus_access_t and their user pointer. Both callbacks NULL removes
+     * it, one NULL is UC_ERR_ARG. Without a filter every page is filled as
+     * before. Flushes the TLB, so no page keeps a verdict from before the
+     * change. The host flushes the TLB, uc_ctl_flush_tlb, after every change
+     * of a verdict its policy gives. A data verdict then holds from the next
+     * access, chained blocks included. A flush does not unlink chained
+     * translation blocks: code already chained inside a page whose fetch
+     * verdict became UC_BUS_DENY_FETCH keeps running until the emulation
+     * stops. A host that changes a fetch verdict from a callback flushes,
+     * then ends the run, with uc_emu_stop or, from a memory or MMIO
+     * callback, UC_CTL_UC_EXIT_AFTER_INSN. Removing translated code with
+     * uc_ctl_remove_cache is not needed for a verdict change: blocks of a
+     * denied page are reached only through a fill, which faults.
+     * UC_ARCH_ARM only, UC_ERR_ARG on other architectures and for a read.
+     * Write: @args = (uc_cb_bus_page_t, uc_cb_bus_access_t, void *) */
+    UC_CTL_BUS_FILTER,
 } uc_control_type;
 
 /*
@@ -877,6 +972,10 @@ See sample_ctl.c for a detailed example.
            (void *)(user))
 #define uc_ctl_arm_security(uc, enabled)                                       \
     uc_ctl(uc, UC_CTL_WRITE(UC_CTL_ARM_SECURITY, 1), (int)(enabled))
+#define uc_ctl_bus_filter(uc, page_cb, access_cb, user)                        \
+    uc_ctl(uc, UC_CTL_WRITE(UC_CTL_BUS_FILTER, 3),                             \
+           (uc_cb_bus_page_t)(page_cb), (uc_cb_bus_access_t)(access_cb),       \
+           (void *)(user))
 
 // Opaque storage for CPU context, used with uc_context_*()
 struct uc_context;

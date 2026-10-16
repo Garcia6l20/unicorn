@@ -3111,6 +3111,899 @@ static void test_arm_v8m_remove_cache_subpage(void)
     TEST_MSG("removed r0 %u, without removal r0 %u", removed, kept);
 }
 
+#define BUS_PAGE 0x4000
+#define BUS_WORD 0x11223344u
+#define BUS_DATA 0x8000
+#define BUS_FAULT_EXTERNAL (0x8u | 1u << 12)
+#define BUS_FAULT_WNR (1u << 11)
+#define BUS_CHAIN_COUNT 100000
+#define BUS_CHAIN_FLIP 1000
+
+typedef struct _BUS_LOG {
+    uint64_t page;
+    uint64_t alias;
+    unsigned secure_verdict;
+    unsigned ns_verdict;
+    int access_verdict;
+    uint64_t raz_value;
+    int page_fills;
+    uc_mem_type first_type;
+    uint64_t first_address;
+    uc_mem_attrs page_attrs;
+    int accesses;
+    int secure_accesses;
+    int writes;
+    uint64_t stored;
+    uint64_t store_address;
+    uint64_t address;
+    unsigned size;
+    uc_mem_type type;
+    uc_mem_attrs attrs;
+} BUS_LOG;
+
+static unsigned test_arm_bus_page(uc_engine *uc, uint64_t page,
+                                  uint64_t address, uc_mem_attrs attrs,
+                                  uc_mem_type access_type, void *user_data)
+{
+    BUS_LOG *log = user_data;
+
+    if (page != log->page && page != log->alias) {
+        return 0;
+    }
+    if (log->page_fills++ == 0) {
+        log->first_type = access_type;
+        log->first_address = address;
+    }
+    log->page_attrs = attrs;
+    return attrs.secure ? log->secure_verdict : log->ns_verdict;
+}
+
+static int test_arm_bus_access(uc_engine *uc, uint64_t address, unsigned size,
+                               uc_mem_attrs attrs, uc_mem_type access_type,
+                               uint64_t *value, void *user_data)
+{
+    BUS_LOG *log = user_data;
+
+    log->accesses++;
+    if (attrs.secure) {
+        log->secure_accesses++;
+    }
+    log->address = address;
+    log->size = size;
+    log->type = access_type;
+    log->attrs = attrs;
+    if (access_type == UC_MEM_WRITE) {
+        log->writes++;
+        log->stored = *value;
+        log->store_address = address;
+    } else {
+        TEST_CHECK(*value == 0);
+        *value = log->raz_value;
+    }
+    return log->access_verdict;
+}
+
+static void test_arm_bus_log(BUS_LOG *log, uint64_t page, unsigned verdict,
+                             int access_verdict)
+{
+    memset(log, 0, sizeof(*log));
+    log->page = page;
+    log->alias = page;
+    log->secure_verdict = verdict;
+    log->ns_verdict = verdict;
+    log->access_verdict = access_verdict;
+}
+
+static void test_arm_bus_install(uc_engine *uc, BUS_LOG *log)
+{
+    OK(uc_ctl_bus_filter(uc, test_arm_bus_page, test_arm_bus_access, log));
+}
+
+static void test_arm_bus_put(uc_engine *uc, uint64_t address, uint32_t value)
+{
+    OK(uc_mem_write(uc, address, &value, sizeof(value)));
+}
+
+static void test_arm_bus_filter_fetch_first(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    BUS_LOG log;
+    char code[] = "\x08\x68";
+
+    uc = test_arm_v8m_ns_open(code, sizeof(code) - 1, &run);
+    test_arm_bus_put(uc, code_start + 0x200, BUS_WORD);
+    test_arm_bus_log(&log, code_start, 0, UC_BUS_RAZ_WI);
+    log.ns_verdict = UC_BUS_FILTER_DATA;
+    test_arm_bus_install(uc, &log);
+    test_arm_v8m_load(uc, &run, code_start + 0x200);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(log.first_type == UC_MEM_FETCH);
+    TEST_CHECK(log.first_address == code_start);
+    TEST_CHECK(log.page_fills == 1);
+    TEST_CHECK(log.accesses == 1);
+    TEST_CHECK(!log.page_attrs.secure && !log.attrs.secure);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == 0);
+    TEST_MSG("fills %d accesses %d r0 0x%x", log.page_fills, log.accesses,
+             test_arm_v8m_get(uc, UC_ARM_REG_R0));
+    OK(uc_close(uc));
+}
+
+static uint64_t test_arm_bus_fast_loop(BUS_LOG *log)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    char code[] = "\x10\x60\x11\x68\x01\x3b\xfb\xd1";
+    uint64_t slow = 0;
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    OK(uc_mem_map(uc, BUS_DATA, 0x400, UC_PROT_READ | UC_PROT_WRITE));
+    if (log) {
+        test_arm_bus_install(uc, log);
+    }
+    test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0x55aa);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, BUS_DATA);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, V8M_LOOP_COUNT);
+    OK(uc_ctl_slow_path_count_reset(uc));
+    test_arm_v8m_loop_run(uc, &run, code_start, 4);
+    OK(uc_ctl_slow_path_count(uc, &slow));
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) == 0);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R1) == 0x55aa);
+    TEST_CHECK(test_arm_v8m_word(uc, BUS_DATA) == 0x55aa);
+    OK(uc_close(uc));
+    return slow;
+}
+
+static void test_arm_bus_filter_fast(void)
+{
+    BUS_LOG log;
+    uint64_t plain = test_arm_bus_fast_loop(NULL);
+    uint64_t slow;
+
+    test_arm_bus_log(&log, BUS_DATA, 0, UC_BUS_RAZ_WI);
+    slow = test_arm_bus_fast_loop(&log);
+    TEST_CHECK(log.page_fills > 0);
+    TEST_CHECK(log.accesses == 0);
+    TEST_CHECK(slow == plain);
+    TEST_CHECK(slow <= 2);
+    TEST_MSG("fills %d accesses %d slow %" PRIu64 " plain %" PRIu64,
+             log.page_fills, log.accesses, slow, plain);
+}
+
+static void test_arm_bus_exempt_idau(void *user, uint32_t address, int *region,
+                                     bool *exempt, bool *ns, bool *nsc)
+{
+    if (address < code_start + 0x400 ||
+        (address >= BUS_PAGE && address < BUS_PAGE + 0x400)) {
+        *exempt = true;
+    }
+}
+
+static void test_arm_bus_filter_per_entry(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    BUS_LOG log;
+    char code[] = "\x08\x68";
+    int i;
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    OK(uc_ctl_arm_security(uc, 1));
+    OK(uc_ctl_arm_idau(uc, test_arm_bus_exempt_idau, NULL));
+    test_arm_bus_put(uc, BUS_PAGE, BUS_WORD);
+    test_arm_bus_log(&log, BUS_PAGE, 0, UC_BUS_RAZ_WI);
+    log.ns_verdict = UC_BUS_FILTER_DATA;
+    test_arm_bus_install(uc, &log);
+    for (i = 0; i < 4; i++) {
+        uint32_t secure = i & 1;
+        int accesses = log.accesses;
+
+        test_arm_v8m_reg(uc, UC_ARM_REG_SECURE, secure);
+        test_arm_v8m_load(uc, &run, BUS_PAGE);
+        TEST_CHECK(run.intno == -1);
+        TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) ==
+                   (secure ? BUS_WORD : 0));
+        TEST_CHECK(log.accesses == accesses + (secure ? 0 : 1));
+        TEST_MSG("pass %d secure %u", i, secure);
+    }
+    TEST_CHECK(log.secure_accesses == 0);
+    TEST_CHECK(log.page_fills == 2);
+    TEST_MSG("fills %d", log.page_fills);
+    OK(uc_close(uc));
+}
+
+static void test_arm_bus_filter_sau_downgrade(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    BUS_LOG log;
+    char code[] = "\x08\x68";
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    OK(uc_ctl_arm_security(uc, 1));
+    test_arm_v8m_sau_region(uc, 0, BUS_PAGE,
+                            (BUS_PAGE + 0x3e0) | V8M_SAU_ENABLE);
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_CTRL, V8M_SAU_ENABLE);
+    test_arm_bus_put(uc, BUS_PAGE + 0x100, BUS_WORD);
+    test_arm_bus_log(&log, BUS_PAGE, UC_BUS_FILTER_DATA, UC_BUS_ALLOW);
+    test_arm_bus_install(uc, &log);
+    test_arm_v8m_load(uc, &run, BUS_PAGE + 0x100);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_SECURE) == 1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == BUS_WORD);
+    TEST_CHECK(log.page_fills == 1);
+    TEST_CHECK(log.first_address == BUS_PAGE + 0x100);
+    TEST_CHECK(!log.page_attrs.secure && log.page_attrs.privileged);
+    TEST_CHECK(log.accesses == 1);
+    TEST_CHECK(!log.attrs.secure && log.attrs.privileged);
+    OK(uc_close(uc));
+}
+
+static void test_arm_bus_filter_raz_wi(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    BUS_LOG log;
+    char code[] = "\x10\x60\x11\x68";
+    uint64_t slow = 0;
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    test_arm_bus_put(uc, BUS_PAGE, BUS_WORD);
+    test_arm_bus_log(&log, BUS_PAGE, UC_BUS_FILTER_DATA, UC_BUS_RAZ_WI);
+    test_arm_bus_install(uc, &log);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0x55aa);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0xffffffff);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, BUS_PAGE);
+    OK(uc_ctl_slow_path_count_reset(uc));
+    test_arm_v8m_run(uc, &run, code_start, code_start + 4);
+    OK(uc_ctl_slow_path_count(uc, &slow));
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(test_arm_v8m_word(uc, BUS_PAGE) == BUS_WORD);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R1) == 0);
+    TEST_CHECK(log.accesses == 2);
+    TEST_CHECK(log.writes == 1);
+    TEST_CHECK(log.stored == 0x55aa);
+    TEST_CHECK(log.store_address == BUS_PAGE);
+    TEST_CHECK(log.type == UC_MEM_READ);
+    TEST_CHECK(log.address == BUS_PAGE && log.size == 4);
+    TEST_CHECK(log.attrs.secure && log.attrs.privileged);
+    TEST_CHECK(slow == 2);
+
+    log.raz_value = 0xa5;
+    test_arm_v8m_run(uc, &run, code_start + 2, code_start + 4);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R1) == 0xa5);
+    TEST_CHECK(log.accesses == 3);
+    OK(uc_close(uc));
+}
+
+static void test_arm_bus_filter_fault(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    V8M_FAULT fault = {-1, 0, 0};
+    BUS_LOG log;
+    uc_hook hook;
+    char code[] = "\x10\x60\x11\x68\x18\x47";
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    OK(uc_hook_add(uc, &hook, UC_HOOK_INTR, test_arm_v8m_fault_intr, &fault, 1,
+                   0));
+    test_arm_bus_put(uc, BUS_PAGE, BUS_WORD);
+    test_arm_bus_log(&log, BUS_PAGE, UC_BUS_FILTER_DATA | UC_BUS_DENY_FETCH,
+                     UC_BUS_FAULT);
+    test_arm_bus_install(uc, &log);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0x55aa);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0xffffffff);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, BUS_PAGE);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, BUS_PAGE | 1);
+
+    test_arm_v8m_run(uc, &run, code_start, code_start + 2);
+    TEST_CHECK(fault.intno == V8M_EXCP_DATA_ABORT);
+    TEST_CHECK(fault.status == (BUS_FAULT_EXTERNAL | BUS_FAULT_WNR));
+    TEST_CHECK(fault.address == BUS_PAGE);
+    TEST_CHECK(test_arm_v8m_word(uc, BUS_PAGE) == BUS_WORD);
+    TEST_MSG("store status 0x%x address 0x%x", fault.status, fault.address);
+
+    fault.intno = -1;
+    test_arm_v8m_run(uc, &run, code_start + 2, code_start + 4);
+    TEST_CHECK(fault.intno == V8M_EXCP_DATA_ABORT);
+    TEST_CHECK(fault.status == BUS_FAULT_EXTERNAL);
+    TEST_CHECK(fault.address == BUS_PAGE);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R1) == 0xffffffff);
+    TEST_CHECK(log.accesses == 2);
+
+    fault.intno = -1;
+    test_arm_v8m_run(uc, &run, code_start + 4, BUS_PAGE + 2);
+    TEST_CHECK(fault.intno == V8M_EXCP_PREFETCH_ABORT);
+    TEST_CHECK(fault.status == BUS_FAULT_EXTERNAL);
+    TEST_CHECK(fault.address == BUS_PAGE);
+    TEST_CHECK(log.accesses == 2);
+    TEST_MSG("fetch status 0x%x address 0x%x", fault.status, fault.address);
+    OK(uc_close(uc));
+}
+
+static void test_arm_bus_filter_exec_after_data(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    BUS_LOG log;
+    char code[] = "\x08\x68\x10\x47";
+    char target[] = "\x5a\x20";
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    OK(uc_mem_write(uc, BUS_PAGE, target, sizeof(target) - 1));
+    test_arm_bus_put(uc, BUS_PAGE + 4, BUS_WORD);
+    test_arm_bus_log(&log, BUS_PAGE, UC_BUS_DENY_FETCH, UC_BUS_ALLOW);
+    test_arm_bus_install(uc, &log);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, BUS_PAGE + 4);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, BUS_PAGE | 1);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 0x100);
+    TEST_CHECK(run.intno == V8M_EXCP_PREFETCH_ABORT);
+    TEST_CHECK(run.pc == BUS_PAGE);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == BUS_WORD);
+    TEST_CHECK(log.first_type == UC_MEM_READ);
+    TEST_CHECK(log.first_address == BUS_PAGE + 4);
+    TEST_CHECK(log.page_fills == 2);
+    TEST_CHECK(log.accesses == 0);
+    TEST_MSG("intno %d pc 0x%x r0 0x%x fills %d", run.intno, run.pc,
+             test_arm_v8m_get(uc, UC_ARM_REG_R0), log.page_fills);
+    OK(uc_close(uc));
+}
+
+static void test_arm_bus_filter_flush(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    BUS_LOG log;
+    char code[] = "\x08\x68";
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    test_arm_bus_put(uc, BUS_PAGE, BUS_WORD);
+    test_arm_bus_log(&log, BUS_PAGE, 0, UC_BUS_RAZ_WI);
+    test_arm_bus_install(uc, &log);
+    test_arm_v8m_load(uc, &run, BUS_PAGE);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == BUS_WORD);
+
+    log.secure_verdict = UC_BUS_FILTER_DATA;
+    test_arm_v8m_load(uc, &run, BUS_PAGE);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == BUS_WORD);
+    TEST_CHECK(log.page_fills == 1);
+    TEST_CHECK(log.accesses == 0);
+
+    OK(uc_ctl_flush_tlb(uc));
+    test_arm_v8m_load(uc, &run, BUS_PAGE);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == 0);
+    TEST_CHECK(log.page_fills == 2);
+    TEST_CHECK(log.accesses == 1);
+    OK(uc_close(uc));
+}
+
+typedef struct _BUS_CHAIN {
+    BUS_LOG *log;
+    int calls;
+    bool deny;
+    bool remove;
+    bool stop;
+    uint64_t target;
+} BUS_CHAIN;
+
+static void test_arm_bus_chain_store(uc_engine *uc, uc_mem_type type,
+                                     uint64_t address, int size, int64_t value,
+                                     void *user_data)
+{
+    BUS_CHAIN *chain = user_data;
+
+    if (++chain->calls == BUS_CHAIN_FLIP) {
+        if (chain->deny) {
+            chain->log->secure_verdict = UC_BUS_DENY_FETCH;
+            OK(uc_ctl_flush_tlb(uc));
+        }
+        if (chain->remove) {
+            OK(uc_ctl_remove_cache(uc, chain->target, chain->target + 0x400));
+        }
+        if (chain->stop) {
+            OK(uc_emu_stop(uc));
+        }
+    }
+}
+
+static uc_engine *test_arm_bus_chain_open(V8M_RUN *run, BUS_LOG *log,
+                                          BUS_CHAIN *chain, uint64_t page)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    char code[] = "\x10\x60\x01\x3b\xfc\xd1\x00\xbf";
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, run);
+    test_arm_bus_log(log, page, 0, UC_BUS_ALLOW);
+    test_arm_bus_install(uc, log);
+    chain->log = log;
+    chain->calls = 0;
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_WRITE, test_arm_bus_chain_store,
+                   chain, BUS_PAGE, BUS_PAGE + 3));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, BUS_PAGE);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, BUS_CHAIN_COUNT);
+    return uc;
+}
+
+static void test_arm_bus_chain_run(uc_engine *uc, V8M_RUN *run, uint64_t begin)
+{
+    run->intno = -1;
+    run->pc = 0;
+    OK(uc_emu_start(uc, begin | 1, code_start + 0x100, 0,
+                    3 * BUS_CHAIN_COUNT + V8M_STEP_BOUND));
+}
+
+static void test_arm_bus_chain_leg(const char *name, uint64_t page,
+                                   uint64_t target, bool deny, bool remove,
+                                   bool stop, int intno, uint32_t pc,
+                                   uint32_t r3)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    BUS_LOG log;
+    BUS_CHAIN chain = {NULL, 0, deny, remove, stop, target};
+
+    uc = test_arm_bus_chain_open(&run, &log, &chain, page);
+    test_arm_bus_chain_run(uc, &run, code_start);
+    if (stop) {
+        TEST_CHECK(run.intno == -1);
+        TEST_CHECK(chain.calls == BUS_CHAIN_FLIP);
+        TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) ==
+                   BUS_CHAIN_COUNT - (BUS_CHAIN_FLIP - 1));
+        TEST_MSG("%s: first run intno %d pc 0x%x", name, run.intno, run.pc);
+        test_arm_bus_chain_run(uc, &run, test_arm_v8m_get(uc, UC_ARM_REG_PC));
+    }
+    TEST_CHECK(run.intno == intno);
+    TEST_CHECK(intno == -1 || run.pc == pc);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) == r3);
+    TEST_MSG("%s: intno %d pc 0x%x calls %d r3 %u", name, run.intno, run.pc,
+             chain.calls, test_arm_v8m_get(uc, UC_ARM_REG_R3));
+    OK(uc_close(uc));
+}
+
+static void test_arm_bus_filter_chained_tb(void)
+{
+    uint32_t at_flip = BUS_CHAIN_COUNT - (BUS_CHAIN_FLIP - 1);
+
+    test_arm_bus_chain_leg("flush", code_start, code_start, true, false, false,
+                           V8M_EXCP_PREFETCH_ABORT, code_start + 6, 0);
+    test_arm_bus_chain_leg("flush and remove", code_start, code_start, true,
+                           true, false, V8M_EXCP_PREFETCH_ABORT,
+                           code_start + 6, 0);
+    test_arm_bus_chain_leg("flush and stop", code_start, code_start, true,
+                           false, true, V8M_EXCP_PREFETCH_ABORT, code_start,
+                           at_flip);
+    test_arm_bus_chain_leg("flush, remove and stop", code_start, code_start,
+                           true, true, true, V8M_EXCP_PREFETCH_ABORT,
+                           code_start, at_flip);
+}
+
+static void test_arm_bus_filter_remove_denied(void)
+{
+    test_arm_bus_chain_leg("data page denied, remove and stop", BUS_PAGE,
+                           BUS_PAGE, true, true, true, -1, 0, 0);
+    test_arm_bus_chain_leg("data page denied, remove", BUS_PAGE, BUS_PAGE,
+                           true, true, false, -1, 0, 0);
+    test_arm_bus_chain_leg("unmapped removal and stop", 0x777000, 0x9000,
+                           false, true, true, -1, 0, 0);
+}
+
+static void test_arm_bus_filter_remove_new_code(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    BUS_LOG log;
+    static uint8_t buffer[0x400];
+    char code[] = "\x00\xbf\x00\xbf";
+    char target[] = "\x01\x20\x08\x47";
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    memset(buffer, 0, sizeof(buffer));
+    memcpy(buffer, target, sizeof(target) - 1);
+    OK(uc_mem_map_ptr(uc, BUS_DATA, 0x400, UC_PROT_ALL, buffer));
+    test_arm_bus_log(&log, BUS_DATA, 0, UC_BUS_ALLOW);
+    test_arm_bus_install(uc, &log);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, code_start | 1);
+    test_arm_v8m_run(uc, &run, BUS_DATA, code_start + 2);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == 1);
+
+    buffer[0] = 2;
+    log.secure_verdict = UC_BUS_DENY_FETCH;
+    OK(uc_ctl_flush_tlb(uc));
+    OK(uc_ctl_remove_cache(uc, BUS_DATA, BUS_DATA + 0x400));
+    log.secure_verdict = 0;
+    OK(uc_ctl_flush_tlb(uc));
+    test_arm_v8m_run(uc, &run, BUS_DATA, code_start + 2);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == 2);
+    TEST_MSG("intno %d r0 %u", run.intno, test_arm_v8m_get(uc, UC_ARM_REG_R0));
+    OK(uc_close(uc));
+}
+
+typedef struct _BUS_FLIP {
+    BUS_LOG *log;
+    int calls;
+    bool flush;
+    bool exit_after;
+} BUS_FLIP;
+
+static void test_arm_bus_flip_store(uc_engine *uc, uc_mem_type type,
+                                    uint64_t address, int size, int64_t value,
+                                    void *user_data)
+{
+    BUS_FLIP *flip = user_data;
+
+    if (++flip->calls != BUS_CHAIN_FLIP) {
+        return;
+    }
+    if (flip->exit_after) {
+        flip->log->secure_verdict = UC_BUS_DENY_FETCH;
+    } else {
+        flip->log->secure_verdict = UC_BUS_FILTER_DATA;
+    }
+    if (flip->flush) {
+        OK(uc_ctl_flush_tlb(uc));
+    }
+    if (flip->exit_after) {
+        OK(uc_ctl_exit_after_insn(uc));
+    }
+}
+
+static int test_arm_bus_data_flip_leg(bool flush, BUS_LOG *log)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    V8M_RUN run;
+    BUS_FLIP flip = {log, 0, flush, false};
+    char code[] = "\x10\x60\x29\x68\x01\x3b\xfb\xd1\x00\xbf";
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    OK(uc_mem_map(uc, BUS_DATA, 0x400, UC_PROT_READ | UC_PROT_WRITE));
+    test_arm_bus_put(uc, BUS_DATA, BUS_WORD);
+    test_arm_bus_log(log, BUS_DATA, 0, UC_BUS_RAZ_WI);
+    test_arm_bus_install(uc, log);
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_WRITE, test_arm_bus_flip_store, &flip,
+                   BUS_PAGE, BUS_PAGE + 3));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, BUS_PAGE);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, BUS_CHAIN_COUNT);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R5, BUS_DATA);
+    run.intno = -1;
+    OK(uc_emu_start(uc, code_start | 1, code_start + 8, 0,
+                    4 * BUS_CHAIN_COUNT + V8M_STEP_BOUND));
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(flip.calls == BUS_CHAIN_COUNT);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) == 0);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R1) == (flush ? 0 : BUS_WORD));
+    OK(uc_close(uc));
+    return log->accesses;
+}
+
+static void test_arm_bus_filter_chained_data(void)
+{
+    BUS_LOG log;
+    int flushed = test_arm_bus_data_flip_leg(true, &log);
+    int kept = test_arm_bus_data_flip_leg(false, &log);
+
+    TEST_CHECK(flushed == BUS_CHAIN_COUNT - (BUS_CHAIN_FLIP - 1));
+    TEST_CHECK(kept == 0);
+    TEST_MSG("filtered loads with the flush %d, without %d", flushed, kept);
+}
+
+static void test_arm_bus_filter_exit_after_insn(void)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    V8M_RUN run;
+    BUS_LOG log;
+    BUS_FLIP flip = {&log, 0, true, true};
+    char code[] = "\x10\x60\x01\x3b\xfc\xd1\x00\xbf";
+    uint32_t at_flip = BUS_CHAIN_COUNT - (BUS_CHAIN_FLIP - 1);
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    OK(uc_ctl_exit_after_insn_enable(uc));
+    test_arm_bus_log(&log, code_start, 0, UC_BUS_ALLOW);
+    test_arm_bus_install(uc, &log);
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_WRITE, test_arm_bus_flip_store, &flip,
+                   BUS_PAGE, BUS_PAGE + 3));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, BUS_PAGE);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, BUS_CHAIN_COUNT);
+    test_arm_bus_chain_run(uc, &run, code_start);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(flip.calls == BUS_CHAIN_FLIP);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_PC) == code_start + 2);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) == at_flip);
+    TEST_MSG("first run intno %d pc 0x%x r3 %u", run.intno,
+             test_arm_v8m_get(uc, UC_ARM_REG_PC),
+             test_arm_v8m_get(uc, UC_ARM_REG_R3));
+    test_arm_bus_chain_run(uc, &run, test_arm_v8m_get(uc, UC_ARM_REG_PC));
+    TEST_CHECK(run.intno == V8M_EXCP_PREFETCH_ABORT);
+    TEST_CHECK(run.pc == code_start + 2);
+    TEST_CHECK(flip.calls == BUS_CHAIN_FLIP);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) == at_flip);
+    TEST_MSG("resume intno %d pc 0x%x r3 %u", run.intno, run.pc,
+             test_arm_v8m_get(uc, UC_ARM_REG_R3));
+    OK(uc_close(uc));
+}
+
+static void test_arm_bus_filter_unaligned(void)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    V8M_RUN run;
+    V8M_FAULT fault = {-1, 0, 0};
+    BUS_LOG log;
+    char code[] = "\x08\x68";
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    OK(uc_hook_add(uc, &hook, UC_HOOK_INTR, test_arm_v8m_fault_intr, &fault, 1,
+                   0));
+    test_arm_bus_put(uc, BUS_PAGE, 0x33221100);
+    test_arm_bus_put(uc, BUS_PAGE + 4, 0x77665544);
+    test_arm_bus_log(&log, BUS_PAGE, UC_BUS_FILTER_DATA, UC_BUS_ALLOW);
+    test_arm_bus_install(uc, &log);
+    test_arm_v8m_load(uc, &run, BUS_PAGE + 2);
+    TEST_CHECK(fault.intno == -1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == 0x55443322);
+    TEST_CHECK(log.accesses == 2);
+    TEST_CHECK(log.address == BUS_PAGE + 4 && log.size == 4);
+
+    log.accesses = 0;
+    log.access_verdict = UC_BUS_FAULT;
+    test_arm_v8m_load(uc, &run, BUS_PAGE + 2);
+    TEST_CHECK(fault.intno == V8M_EXCP_DATA_ABORT);
+    TEST_CHECK(fault.status == BUS_FAULT_EXTERNAL);
+    TEST_CHECK(fault.address == BUS_PAGE);
+    TEST_CHECK(log.accesses == 1);
+    TEST_CHECK(log.address == BUS_PAGE && log.size == 4);
+    TEST_MSG("status 0x%x address 0x%x calls %d", fault.status, fault.address,
+             log.accesses);
+    OK(uc_close(uc));
+}
+
+typedef struct _BUS_HOOKS {
+    int reads;
+    int writes;
+    int64_t written;
+    bool flush;
+} BUS_HOOKS;
+
+static void test_arm_bus_hook_access(uc_engine *uc, uc_mem_type type,
+                                     uint64_t address, int size, int64_t value,
+                                     void *user_data)
+{
+    BUS_HOOKS *hooks = user_data;
+
+    if (type == UC_MEM_WRITE) {
+        hooks->writes++;
+        hooks->written = value;
+        if (hooks->flush) {
+            OK(uc_ctl_flush_tlb(uc));
+        }
+    } else {
+        hooks->reads++;
+    }
+}
+
+static uc_engine *test_arm_bus_hooked_open(V8M_RUN *run, BUS_LOG *log,
+                                           BUS_HOOKS *hooks, int types)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    char code[] = "\x10\x60\x11\x68";
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, run);
+    test_arm_bus_put(uc, BUS_PAGE, BUS_WORD);
+    test_arm_bus_log(log, BUS_PAGE, UC_BUS_FILTER_DATA, UC_BUS_RAZ_WI);
+    test_arm_bus_install(uc, log);
+    OK(uc_hook_add(uc, &hook, types, test_arm_bus_hook_access, hooks, BUS_PAGE,
+                   BUS_PAGE + 3));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0x55aa);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0xffffffff);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, BUS_PAGE);
+    test_arm_v8m_run(uc, run, code_start, code_start + 4);
+    TEST_CHECK(run->intno == -1);
+    TEST_CHECK(test_arm_v8m_word(uc, BUS_PAGE) == BUS_WORD);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R1) == 0);
+    TEST_CHECK(log->accesses == 2);
+    TEST_CHECK(log->stored == 0x55aa);
+    TEST_CHECK(hooks->writes == 1);
+    TEST_CHECK(hooks->written == 0x55aa);
+    return uc;
+}
+
+static void test_arm_bus_filter_mem_hooks(void)
+{
+    V8M_RUN run;
+    BUS_LOG log;
+    BUS_HOOKS hooks = {0, 0, 0, false};
+    uc_engine *uc = test_arm_bus_hooked_open(
+        &run, &log, &hooks, UC_HOOK_MEM_WRITE | UC_HOOK_MEM_READ);
+
+    TEST_CHECK(hooks.reads == 1);
+    TEST_CHECK(log.page_fills == 1);
+    OK(uc_close(uc));
+}
+
+static void test_arm_bus_filter_hook_refill(void)
+{
+    V8M_RUN run;
+    BUS_LOG log;
+    BUS_HOOKS hooks = {0, 0, 0, true};
+    uc_engine *uc =
+        test_arm_bus_hooked_open(&run, &log, &hooks, UC_HOOK_MEM_WRITE);
+
+    TEST_CHECK(log.page_fills == 2);
+    TEST_MSG("fills %d", log.page_fills);
+    OK(uc_close(uc));
+}
+
+static bool test_arm_bus_prot_drop(uc_engine *uc, uc_mem_type type,
+                                   uint64_t address, int size, int64_t value,
+                                   void *user_data)
+{
+    int *calls = user_data;
+
+    (*calls)++;
+    OK(uc_ctl_drop_store(uc));
+    return true;
+}
+
+static void test_arm_bus_filter_prot_drop(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    BUS_LOG log;
+    uc_hook hook;
+    int drops = 0;
+    char code[] = "\x10\x60\x11\x68";
+    uint32_t flash = 0x6000;
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    OK(uc_mem_map(uc, flash, 0x400, UC_PROT_READ | UC_PROT_EXEC));
+    test_arm_bus_put(uc, flash, BUS_WORD);
+    test_arm_bus_log(&log, flash, UC_BUS_FILTER_DATA, UC_BUS_RAZ_WI);
+    test_arm_bus_install(uc, &log);
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_WRITE_PROT, test_arm_bus_prot_drop,
+                   &drops, flash, flash + 3));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0x55aa);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0xffffffff);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, flash);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 4);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(drops == 1);
+    TEST_CHECK(test_arm_v8m_word(uc, flash) == BUS_WORD);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R1) == 0);
+    TEST_CHECK(log.accesses == 1);
+    TEST_CHECK(log.writes == 0);
+    TEST_CHECK(log.type == UC_MEM_READ);
+    OK(uc_close(uc));
+}
+
+static void test_arm_bus_filter_alias(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    BUS_LOG log;
+    char code[] = "\x10\x60\x19\x68";
+    uint32_t target = 0x20000;
+    uint32_t window = 0x30000;
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    OK(uc_mem_map(uc, target, 0x400, UC_PROT_ALL));
+    OK(uc_mem_map_alias(uc, window, 0x400, UC_PROT_ALL, target));
+    test_arm_bus_put(uc, target, BUS_WORD);
+    test_arm_bus_log(&log, target, UC_BUS_FILTER_DATA, UC_BUS_RAZ_WI);
+    log.alias = window;
+    test_arm_bus_install(uc, &log);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0x55aa);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0xffffffff);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, window);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, target);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 4);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(test_arm_v8m_word(uc, target) == BUS_WORD);
+    TEST_CHECK(test_arm_v8m_word(uc, window) == BUS_WORD);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R1) == 0);
+    TEST_CHECK(log.page_fills == 2);
+    TEST_CHECK(log.store_address == window);
+    TEST_CHECK(log.address == target);
+    TEST_CHECK(log.accesses == 2);
+    OK(uc_close(uc));
+}
+
+static void test_arm_bus_filter_ctl(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    BUS_LOG log;
+    char code[] = "\x08\x68";
+    int ignored = 0;
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    test_arm_bus_put(uc, BUS_PAGE, BUS_WORD);
+    test_arm_bus_log(&log, BUS_PAGE, UC_BUS_FILTER_DATA, UC_BUS_RAZ_WI);
+    uc_assert_err(UC_ERR_ARG,
+                  uc_ctl_bus_filter(uc, test_arm_bus_page, NULL, &log));
+    uc_assert_err(UC_ERR_ARG,
+                  uc_ctl_bus_filter(uc, NULL, test_arm_bus_access, &log));
+    test_arm_v8m_load(uc, &run, BUS_PAGE);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == BUS_WORD);
+    TEST_CHECK(log.page_fills == 0);
+
+    test_arm_bus_install(uc, &log);
+    uc_assert_err(UC_ERR_ARG,
+                  uc_ctl_bus_filter(uc, NULL, test_arm_bus_access, &log));
+    uc_assert_err(UC_ERR_ARG,
+                  uc_ctl(uc, UC_CTL_READ(UC_CTL_BUS_FILTER, 1), &ignored));
+    test_arm_v8m_load(uc, &run, BUS_PAGE);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == 0);
+    TEST_CHECK(log.accesses == 1);
+
+    OK(uc_ctl_bus_filter(uc, NULL, NULL, NULL));
+    test_arm_v8m_load(uc, &run, BUS_PAGE);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == BUS_WORD);
+    TEST_CHECK(log.accesses == 1);
+    OK(uc_close(uc));
+}
+
+static void test_arm_bus_filter_ram_only(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    BUS_LOG log;
+    V8M_PLAIN_LOG mmio = {0};
+    char code[] = "\x08\x68";
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    OK(uc_mmio_map(uc, V8M_MMIO, 0x1000, test_arm_mmio_plain_read, &mmio,
+                   test_arm_mmio_plain_write, &mmio));
+    test_arm_bus_log(&log, V8M_MMIO, UC_BUS_FILTER_DATA | UC_BUS_DENY_FETCH,
+                     UC_BUS_RAZ_WI);
+    test_arm_bus_install(uc, &log);
+    test_arm_v8m_load(uc, &run, V8M_MMIO + 0x24);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(mmio.reads == 1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == 0x5a5a0024);
+    TEST_CHECK(log.page_fills == 0);
+    TEST_CHECK(log.accesses == 0);
+    OK(uc_close(uc));
+}
+
+static void test_arm_bus_filter_no_security(void)
+{
+    uc_cpu_arm models[] = {UC_CPU_ARM_CORTEX_M0, UC_CPU_ARM_CORTEX_M3,
+                           UC_CPU_ARM_CORTEX_M4, UC_CPU_ARM_CORTEX_M7};
+    char code[] = "\x08\x68";
+    uc_engine *uc;
+    uc_hook hook;
+    V8M_RUN run;
+    BUS_LOG log;
+    size_t i;
+
+    for (i = 0; i < sizeof(models) / sizeof(models[0]); i++) {
+        uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB, code, sizeof(code) - 1,
+                        models[i]);
+        OK(uc_hook_add(uc, &hook, UC_HOOK_INTR, test_arm_v8m_intr, &run, 1, 0));
+        test_arm_bus_put(uc, BUS_PAGE, BUS_WORD);
+        test_arm_bus_log(&log, BUS_PAGE, 0, UC_BUS_RAZ_WI);
+        log.ns_verdict = UC_BUS_FILTER_DATA;
+        test_arm_bus_install(uc, &log);
+        test_arm_v8m_load(uc, &run, BUS_PAGE);
+        TEST_CHECK(run.intno == -1);
+        TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == 0);
+        TEST_CHECK(log.page_fills == 1);
+        TEST_CHECK(!log.page_attrs.secure && log.page_attrs.privileged);
+        TEST_CHECK(log.accesses == 1 && !log.attrs.secure);
+        TEST_MSG("model %d", (int)models[i]);
+        OK(uc_close(uc));
+    }
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
@@ -3220,4 +4113,34 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
               test_arm_v8m_remove_cache_unfetchable},
              {"test_arm_v8m_remove_cache_subpage",
               test_arm_v8m_remove_cache_subpage},
+             {"test_arm_bus_filter_fetch_first",
+              test_arm_bus_filter_fetch_first},
+             {"test_arm_bus_filter_fast", test_arm_bus_filter_fast},
+             {"test_arm_bus_filter_per_entry", test_arm_bus_filter_per_entry},
+             {"test_arm_bus_filter_sau_downgrade",
+              test_arm_bus_filter_sau_downgrade},
+             {"test_arm_bus_filter_raz_wi", test_arm_bus_filter_raz_wi},
+             {"test_arm_bus_filter_fault", test_arm_bus_filter_fault},
+             {"test_arm_bus_filter_exec_after_data",
+              test_arm_bus_filter_exec_after_data},
+             {"test_arm_bus_filter_flush", test_arm_bus_filter_flush},
+             {"test_arm_bus_filter_chained_tb", test_arm_bus_filter_chained_tb},
+             {"test_arm_bus_filter_remove_denied",
+              test_arm_bus_filter_remove_denied},
+             {"test_arm_bus_filter_remove_new_code",
+              test_arm_bus_filter_remove_new_code},
+             {"test_arm_bus_filter_unaligned", test_arm_bus_filter_unaligned},
+             {"test_arm_bus_filter_chained_data",
+              test_arm_bus_filter_chained_data},
+             {"test_arm_bus_filter_exit_after_insn",
+              test_arm_bus_filter_exit_after_insn},
+             {"test_arm_bus_filter_mem_hooks", test_arm_bus_filter_mem_hooks},
+             {"test_arm_bus_filter_hook_refill",
+              test_arm_bus_filter_hook_refill},
+             {"test_arm_bus_filter_prot_drop", test_arm_bus_filter_prot_drop},
+             {"test_arm_bus_filter_alias", test_arm_bus_filter_alias},
+             {"test_arm_bus_filter_ctl", test_arm_bus_filter_ctl},
+             {"test_arm_bus_filter_ram_only", test_arm_bus_filter_ram_only},
+             {"test_arm_bus_filter_no_security",
+              test_arm_bus_filter_no_security},
              {NULL, NULL}};
