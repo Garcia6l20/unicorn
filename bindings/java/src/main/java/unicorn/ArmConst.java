@@ -192,7 +192,11 @@ public interface ArmConst {
     public static final int UC_ARM_REG_SAU_RNR = 145;
     public static final int UC_ARM_REG_SAU_RBAR = 146;
     public static final int UC_ARM_REG_SAU_RLAR = 147;
-    public static final int UC_ARM_REG_ENDING = 148;
+    public static final int UC_ARM_REG_CPACR_S = 148;
+    public static final int UC_ARM_REG_CPACR_NS = 149;
+    public static final int UC_ARM_REG_FPCCR_S = 150;
+    public static final int UC_ARM_REG_FPCCR_NS = 151;
+    public static final int UC_ARM_REG_ENDING = 152;
 
     // alias registers
     public static final int UC_ARM_REG_R13 = 12;

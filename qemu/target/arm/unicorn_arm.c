@@ -253,6 +253,22 @@ static bool arm_v8m_has_sau_regions(CPUARMState *env)
     return arm_v8m_has_security(env) && env_archcpu(env)->sau_sregion > 0;
 }
 
+static bool arm_v8m_has_fp_context(CPUARMState *env)
+{
+    return arm_v8m_has_security(env) &&
+           cpu_isar_feature(aa32_vfp_simd, env_archcpu(env));
+}
+
+static uint32_t *arm_v8m_cpacr(CPUARMState *env, unsigned int regid)
+{
+    return &env->v7m.cpacr[regid == UC_ARM_REG_CPACR_S ? M_REG_S : M_REG_NS];
+}
+
+static uint32_t *arm_v8m_fpccr(CPUARMState *env, unsigned int regid)
+{
+    return &env->v7m.fpccr[regid == UC_ARM_REG_FPCCR_S ? M_REG_S : M_REG_NS];
+}
+
 static void arm_v8m_sau_changed(CPUARMState *env)
 {
     env->uc->tcg_flush_tlb(env->uc);
@@ -454,6 +470,22 @@ uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
             }
             CHECK_REG_TYPE(uint32_t);
             *(uint32_t *)value = env->sau.rlar[env->sau.rnr];
+            break;
+        case UC_ARM_REG_CPACR_S:
+        case UC_ARM_REG_CPACR_NS:
+            if (!arm_v8m_has_fp_context(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            *(uint32_t *)value = *arm_v8m_cpacr(env, regid);
+            break;
+        case UC_ARM_REG_FPCCR_S:
+        case UC_ARM_REG_FPCCR_NS:
+            if (!arm_v8m_has_fp_context(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            *(uint32_t *)value = *arm_v8m_fpccr(env, regid);
             break;
         }
     }
@@ -718,6 +750,22 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
             CHECK_REG_TYPE(uint32_t);
             env->sau.rlar[env->sau.rnr] = *(uint32_t *)value & ~0x1c;
             arm_v8m_sau_changed(env);
+            break;
+        case UC_ARM_REG_CPACR_S:
+        case UC_ARM_REG_CPACR_NS:
+            if (!arm_v8m_has_fp_context(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            *arm_v8m_cpacr(env, regid) = *(uint32_t *)value & (0xf << 20);
+            break;
+        case UC_ARM_REG_FPCCR_S:
+        case UC_ARM_REG_FPCCR_NS:
+            if (!arm_v8m_has_fp_context(env)) {
+                return UC_ERR_ARG;
+            }
+            CHECK_REG_TYPE(uint32_t);
+            *arm_v8m_fpccr(env, regid) = *(uint32_t *)value;
             break;
         }
     }
