@@ -196,7 +196,25 @@ public interface ArmConst {
     public static final int UC_ARM_REG_CPACR_NS = 149;
     public static final int UC_ARM_REG_FPCCR_S = 150;
     public static final int UC_ARM_REG_FPCCR_NS = 151;
-    public static final int UC_ARM_REG_ENDING = 152;
+    public static final int UC_ARM_REG_MSP_S = 152;
+    public static final int UC_ARM_REG_MSP_NS = 153;
+    public static final int UC_ARM_REG_PSP_S = 154;
+    public static final int UC_ARM_REG_PSP_NS = 155;
+    public static final int UC_ARM_REG_CONTROL_S = 156;
+    public static final int UC_ARM_REG_CONTROL_NS = 157;
+    public static final int UC_ARM_REG_PRIMASK_S = 158;
+    public static final int UC_ARM_REG_PRIMASK_NS = 159;
+    public static final int UC_ARM_REG_BASEPRI_S = 160;
+    public static final int UC_ARM_REG_BASEPRI_NS = 161;
+    public static final int UC_ARM_REG_FAULTMASK_S = 162;
+    public static final int UC_ARM_REG_FAULTMASK_NS = 163;
+    public static final int UC_ARM_REG_MSPLIM_S = 164;
+    public static final int UC_ARM_REG_MSPLIM_NS = 165;
+    public static final int UC_ARM_REG_PSPLIM_S = 166;
+    public static final int UC_ARM_REG_PSPLIM_NS = 167;
+    public static final int UC_ARM_REG_FAULT_STATUS = 168;
+    public static final int UC_ARM_REG_FAULT_ADDRESS = 169;
+    public static final int UC_ARM_REG_ENDING = 170;
 
     // alias registers
     public static final int UC_ARM_REG_R13 = 12;
@@ -210,5 +228,7 @@ public interface ArmConst {
     public static final int UC_ARM_INS_INVALID = 0;
     public static final int UC_ARM_INS_WFI = 1;
     public static final int UC_ARM_INS_ENDING = 2;
+    public static final int UC_ARM_FAULT_NSC_EXEC = 15;
+    public static final int UC_ARM_FAULT_SECURE = 14;
 
 }

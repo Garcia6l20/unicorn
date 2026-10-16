@@ -263,6 +263,42 @@ typedef enum uc_arm_reg {
     UC_ARM_REG_CPACR_NS,
     UC_ARM_REG_FPCCR_S,
     UC_ARM_REG_FPCCR_NS,
+    /**
+     * The v8-M special registers of one security state, _S Secure and _NS
+     * Non-secure, in any state and mode. UC_ARM_REG_MSP and the other
+     * unsuffixed names keep accessing the current state. The stack pointers
+     * follow the bank they name whichever of them is active. A CONTROL_S
+     * write keeps nPRIV, SPSEL, FPCA and SFPA, a CONTROL_NS write nPRIV and
+     * SPSEL: the engine keeps FPCA and SFPA in CONTROL_S only. An SPSEL
+     * write of the current state in Thread mode switches the active stack
+     * pointer. Writes keep the architectural bits of the other registers.
+     * UC_ERR_ARG without the Security Extension.
+     */
+    UC_ARM_REG_MSP_S,
+    UC_ARM_REG_MSP_NS,
+    UC_ARM_REG_PSP_S,
+    UC_ARM_REG_PSP_NS,
+    UC_ARM_REG_CONTROL_S,
+    UC_ARM_REG_CONTROL_NS,
+    UC_ARM_REG_PRIMASK_S,
+    UC_ARM_REG_PRIMASK_NS,
+    UC_ARM_REG_BASEPRI_S,
+    UC_ARM_REG_BASEPRI_NS,
+    UC_ARM_REG_FAULTMASK_S,
+    UC_ARM_REG_FAULTMASK_NS,
+    UC_ARM_REG_MSPLIM_S,
+    UC_ARM_REG_MSPLIM_NS,
+    UC_ARM_REG_PSPLIM_S,
+    UC_ARM_REG_PSPLIM_NS,
+    /**
+     * Read only. The short-format fault status and the address of the last
+     * abort, valid in a UC_HOOK_INTR callback for an EXCP_PREFETCH_ABORT or
+     * EXCP_DATA_ABORT. On M-profile the status bits [3:0] of a security
+     * fault are UC_ARM_FAULT_SECURE or UC_ARM_FAULT_NSC_EXEC, and bit 11 is
+     * set for a store.
+     */
+    UC_ARM_REG_FAULT_STATUS,
+    UC_ARM_REG_FAULT_ADDRESS,
     UC_ARM_REG_ENDING, // <-- mark the end of the list or registers
 
     //> alias registers
@@ -282,6 +318,18 @@ typedef enum uc_arm_insn {
 
     UC_ARM_INS_ENDING, // mark the end of the list of insn
 } uc_arm_insn;
+
+/**
+ * @brief UC_ARM_REG_FAULT_STATUS of a Non-secure fetch from Secure,
+ * Non-secure callable memory, the fetch of a possible SG entry point.
+ */
+#define UC_ARM_FAULT_NSC_EXEC 0xf
+
+/**
+ * @brief UC_ARM_REG_FAULT_STATUS of any other access the security lookup
+ * refuses: a SecureFault INVTRAN, INVEP or AUVIOL.
+ */
+#define UC_ARM_FAULT_SECURE 0xe
 
 /**
  * @brief IDAU of the v8-M security lookup, installed with uc_ctl_arm_idau.

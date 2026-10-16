@@ -2452,6 +2452,182 @@ static void test_arm_v8m_fp_context(void)
     OK(uc_close(uc));
 }
 
+#define V8M_CONTROL_SPSEL (1u << 1)
+
+typedef struct _V8M_SP_CASE {
+    uint32_t secure;
+    uint32_t spsel;
+} V8M_SP_CASE;
+
+static void test_arm_v8m_check_sps(uc_engine *uc)
+{
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_MSP_S) == 0x1100);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_PSP_S) == 0x1200);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_MSP_NS) == 0x1300);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_PSP_NS) == 0x1400);
+}
+
+static void test_arm_v8m_banked_sp(void)
+{
+    static const V8M_SP_CASE cases[] = {{1, 0}, {1, 1}, {0, 0}, {0, 1}};
+    uc_engine *uc;
+    V8M_RUN run;
+    char code[] = "\x00\xbf";
+    size_t i;
+
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        const V8M_SP_CASE *one = &cases[i];
+        int control =
+            one->secure ? UC_ARM_REG_CONTROL_S : UC_ARM_REG_CONTROL_NS;
+        uint32_t active = one->spsel ? (one->secure ? 0x1200 : 0x1400)
+                                     : (one->secure ? 0x1100 : 0x1300);
+
+        TEST_CASE_("secure %u spsel %u", one->secure, one->spsel);
+        uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+        test_arm_v8m_reg(uc, UC_ARM_REG_SECURE, one->secure);
+        test_arm_v8m_reg(uc, control, one->spsel ? V8M_CONTROL_SPSEL : 0);
+        test_arm_v8m_reg(uc, UC_ARM_REG_MSP_S, 0x1100);
+        test_arm_v8m_reg(uc, UC_ARM_REG_PSP_S, 0x1200);
+        test_arm_v8m_reg(uc, UC_ARM_REG_MSP_NS, 0x1300);
+        test_arm_v8m_reg(uc, UC_ARM_REG_PSP_NS, 0x1400);
+        test_arm_v8m_check_sps(uc);
+        TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_SP) == active);
+
+        test_arm_v8m_reg(uc, UC_ARM_REG_SECURE, !one->secure);
+        test_arm_v8m_check_sps(uc);
+        TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_SP) ==
+                   (one->secure ? 0x1300 : 0x1100));
+
+        test_arm_v8m_reg(uc, UC_ARM_REG_SECURE, one->secure);
+        test_arm_v8m_check_sps(uc);
+        TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_SP) == active);
+
+        test_arm_v8m_reg(uc, UC_ARM_REG_IPSR, 3);
+        test_arm_v8m_check_sps(uc);
+        TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_SP) ==
+                   (one->secure ? 0x1100 : 0x1300));
+        OK(uc_close(uc));
+    }
+    TEST_CASE(NULL);
+}
+
+static void test_arm_v8m_banked_special(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    char code[] = "\x00\xbf";
+    uint32_t ignored = 0;
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    test_arm_v8m_reg(uc, UC_ARM_REG_CONTROL_S, 0xffffffff);
+    test_arm_v8m_reg(uc, UC_ARM_REG_CONTROL_NS, 0xffffffff);
+    test_arm_v8m_reg(uc, UC_ARM_REG_PRIMASK_S, 0xffffffff);
+    test_arm_v8m_reg(uc, UC_ARM_REG_PRIMASK_NS, 0);
+    test_arm_v8m_reg(uc, UC_ARM_REG_BASEPRI_S, 0x1f0);
+    test_arm_v8m_reg(uc, UC_ARM_REG_BASEPRI_NS, 0x40);
+    test_arm_v8m_reg(uc, UC_ARM_REG_FAULTMASK_S, 0);
+    test_arm_v8m_reg(uc, UC_ARM_REG_FAULTMASK_NS, 3);
+    test_arm_v8m_reg(uc, UC_ARM_REG_MSPLIM_S, 0x2007);
+    test_arm_v8m_reg(uc, UC_ARM_REG_MSPLIM_NS, 0x3008);
+    test_arm_v8m_reg(uc, UC_ARM_REG_PSPLIM_S, 0x4010);
+    test_arm_v8m_reg(uc, UC_ARM_REG_PSPLIM_NS, 0x501f);
+
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_CONTROL_S) == 0xf);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_CONTROL_NS) == 0x3);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_PRIMASK_S) == 1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_PRIMASK_NS) == 0);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_BASEPRI_S) == 0xf0);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_BASEPRI_NS) == 0x40);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_FAULTMASK_S) == 0);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_FAULTMASK_NS) == 1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_MSPLIM_S) == 0x2000);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_MSPLIM_NS) == 0x3008);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_PSPLIM_S) == 0x4010);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_PSPLIM_NS) == 0x5018);
+
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_PRIMASK) == 1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_BASEPRI) == 0xf0);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_MSPLIM) == 0x2000);
+    test_arm_v8m_reg(uc, UC_ARM_REG_SECURE, 0);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_PRIMASK) == 0);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_BASEPRI) == 0x40);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_FAULTMASK) == 1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_MSPLIM) == 0x3008);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_PSPLIM) == 0x5018);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_PRIMASK_S) == 1);
+    uc_assert_err(UC_ERR_ARG,
+                  uc_reg_write(uc, UC_ARM_REG_FAULT_STATUS, &ignored));
+    uc_assert_err(UC_ERR_ARG,
+                  uc_reg_write(uc, UC_ARM_REG_FAULT_ADDRESS, &ignored));
+    OK(uc_close(uc));
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB, code, sizeof(code) - 1,
+                    UC_CPU_ARM_CORTEX_M7);
+    uc_assert_err(UC_ERR_ARG, uc_reg_read(uc, UC_ARM_REG_MSP_S, &ignored));
+    uc_assert_err(UC_ERR_ARG, uc_reg_write(uc, UC_ARM_REG_PSPLIM_NS, &ignored));
+    OK(uc_close(uc));
+}
+
+typedef struct _V8M_FAULT {
+    int intno;
+    uint32_t status;
+    uint32_t address;
+} V8M_FAULT;
+
+static void test_arm_v8m_fault_intr(uc_engine *uc, int intno, void *user_data)
+{
+    V8M_FAULT *fault = user_data;
+
+    fault->intno = intno;
+    OK(uc_reg_read(uc, UC_ARM_REG_FAULT_STATUS, &fault->status));
+    OK(uc_reg_read(uc, UC_ARM_REG_FAULT_ADDRESS, &fault->address));
+    OK(uc_emu_stop(uc));
+}
+
+static void test_arm_v8m_nsc_idau(void *user, uint32_t address, int *region,
+                                  bool *exempt, bool *ns, bool *nsc)
+{
+    if (address >= 0x3000 && address <= 0x33ff) {
+        *ns = false;
+        *nsc = true;
+    }
+}
+
+static void test_arm_v8m_fault_status(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    V8M_FAULT fault = {-1, 0, 0};
+    uc_hook hook;
+    char code[] = "\x08\x68\x08\x60\x08\x47";
+
+    uc = test_arm_v8m_ns_open(code, sizeof(code) - 1, &run);
+    OK(uc_hook_add(uc, &hook, UC_HOOK_INTR, test_arm_v8m_fault_intr, &fault, 1,
+                   0));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0x4404);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 2);
+    TEST_CHECK(fault.intno == V8M_EXCP_DATA_ABORT);
+    TEST_CHECK(fault.status == UC_ARM_FAULT_SECURE);
+    TEST_CHECK(fault.address == 0x4404);
+
+    fault.intno = -1;
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0x4408);
+    test_arm_v8m_run(uc, &run, code_start + 2, code_start + 4);
+    TEST_CHECK(fault.intno == V8M_EXCP_DATA_ABORT);
+    TEST_CHECK(fault.status == (UC_ARM_FAULT_SECURE | 1u << 11));
+    TEST_CHECK(fault.address == 0x4408);
+
+    fault.intno = -1;
+    OK(uc_ctl_arm_idau(uc, test_arm_v8m_nsc_idau, NULL));
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_CTRL, 2);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0x3001);
+    test_arm_v8m_run(uc, &run, code_start + 4, code_start + 6);
+    TEST_CHECK(fault.intno == V8M_EXCP_PREFETCH_ABORT);
+    TEST_CHECK(fault.status == UC_ARM_FAULT_NSC_EXEC);
+    TEST_CHECK(fault.address == 0x3000);
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
@@ -2544,4 +2720,7 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_v8m_sau_isb", test_arm_v8m_sau_isb},
              {"test_arm_v8m_sau_subpage", test_arm_v8m_sau_subpage},
              {"test_arm_v8m_fp_context", test_arm_v8m_fp_context},
+             {"test_arm_v8m_banked_sp", test_arm_v8m_banked_sp},
+             {"test_arm_v8m_banked_special", test_arm_v8m_banked_special},
+             {"test_arm_v8m_fault_status", test_arm_v8m_fault_status},
              {NULL, NULL}};

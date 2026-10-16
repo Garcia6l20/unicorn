@@ -269,6 +269,91 @@ static uint32_t *arm_v8m_fpccr(CPUARMState *env, unsigned int regid)
     return &env->v7m.fpccr[regid == UC_ARM_REG_FPCCR_S ? M_REG_S : M_REG_NS];
 }
 
+static bool arm_v8m_is_banked(unsigned int regid)
+{
+    return regid >= UC_ARM_REG_MSP_S && regid <= UC_ARM_REG_PSPLIM_NS;
+}
+
+static uint32_t *arm_v8m_banked_sp(CPUARMState *env, bool secure, bool process)
+{
+    if (secure != env->v7m.secure) {
+        return process ? &env->v7m.other_ss_psp : &env->v7m.other_ss_msp;
+    }
+    return process == v7m_using_psp(env) ? &env->regs[13] : &env->v7m.other_sp;
+}
+
+static uint32_t *arm_v8m_banked(CPUARMState *env, unsigned int regid)
+{
+    bool secure = (regid - UC_ARM_REG_MSP_S) % 2 == 0;
+
+    switch (regid) {
+    case UC_ARM_REG_MSP_S:
+    case UC_ARM_REG_MSP_NS:
+        return arm_v8m_banked_sp(env, secure, false);
+    case UC_ARM_REG_PSP_S:
+    case UC_ARM_REG_PSP_NS:
+        return arm_v8m_banked_sp(env, secure, true);
+    case UC_ARM_REG_CONTROL_S:
+    case UC_ARM_REG_CONTROL_NS:
+        return &env->v7m.control[secure];
+    case UC_ARM_REG_PRIMASK_S:
+    case UC_ARM_REG_PRIMASK_NS:
+        return &env->v7m.primask[secure];
+    case UC_ARM_REG_BASEPRI_S:
+    case UC_ARM_REG_BASEPRI_NS:
+        return &env->v7m.basepri[secure];
+    case UC_ARM_REG_FAULTMASK_S:
+    case UC_ARM_REG_FAULTMASK_NS:
+        return &env->v7m.faultmask[secure];
+    case UC_ARM_REG_MSPLIM_S:
+    case UC_ARM_REG_MSPLIM_NS:
+        return &env->v7m.msplim[secure];
+    default:
+        return &env->v7m.psplim[secure];
+    }
+}
+
+static void arm_v8m_banked_write(CPUARMState *env, unsigned int regid,
+                                 uint32_t value)
+{
+    bool secure = (regid - UC_ARM_REG_MSP_S) % 2 == 0;
+    uint32_t *field = arm_v8m_banked(env, regid);
+    uint32_t keep;
+
+    switch (regid) {
+    case UC_ARM_REG_MSP_S:
+    case UC_ARM_REG_MSP_NS:
+    case UC_ARM_REG_PSP_S:
+    case UC_ARM_REG_PSP_NS:
+        *field = value & ~3;
+        break;
+    case UC_ARM_REG_CONTROL_S:
+    case UC_ARM_REG_CONTROL_NS:
+        keep = R_V7M_CONTROL_NPRIV_MASK;
+        if (secure) {
+            keep |= R_V7M_CONTROL_FPCA_MASK | R_V7M_CONTROL_SFPA_MASK;
+        }
+        *field = (*field & R_V7M_CONTROL_SPSEL_MASK) | (value & keep);
+        write_v7m_control_spsel_for_secstate(
+            env, (value & R_V7M_CONTROL_SPSEL_MASK) != 0, secure);
+        break;
+    case UC_ARM_REG_PRIMASK_S:
+    case UC_ARM_REG_PRIMASK_NS:
+    case UC_ARM_REG_FAULTMASK_S:
+    case UC_ARM_REG_FAULTMASK_NS:
+        *field = value & 1;
+        break;
+    case UC_ARM_REG_BASEPRI_S:
+    case UC_ARM_REG_BASEPRI_NS:
+        *field = value & 0xff;
+        break;
+    default:
+        *field = value & ~7;
+        break;
+    }
+    arm_rebuild_hflags(env);
+}
+
 static void arm_v8m_sau_changed(CPUARMState *env)
 {
     env->uc->tcg_flush_tlb(env->uc);
@@ -486,6 +571,23 @@ uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
             }
             CHECK_REG_TYPE(uint32_t);
             *(uint32_t *)value = *arm_v8m_fpccr(env, regid);
+            break;
+        case UC_ARM_REG_FAULT_STATUS:
+            CHECK_REG_TYPE(uint32_t);
+            *(uint32_t *)value = env->exception.fsr;
+            break;
+        case UC_ARM_REG_FAULT_ADDRESS:
+            CHECK_REG_TYPE(uint32_t);
+            *(uint32_t *)value = (uint32_t)env->exception.vaddress;
+            break;
+        default:
+            if (arm_v8m_is_banked(regid)) {
+                if (!arm_v8m_has_security(env)) {
+                    return UC_ERR_ARG;
+                }
+                CHECK_REG_TYPE(uint32_t);
+                *(uint32_t *)value = *arm_v8m_banked(env, regid);
+            }
             break;
         }
     }
@@ -766,6 +868,18 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
             }
             CHECK_REG_TYPE(uint32_t);
             *arm_v8m_fpccr(env, regid) = *(uint32_t *)value;
+            break;
+        case UC_ARM_REG_FAULT_STATUS:
+        case UC_ARM_REG_FAULT_ADDRESS:
+            return UC_ERR_ARG;
+        default:
+            if (arm_v8m_is_banked(regid)) {
+                if (!arm_v8m_has_security(env)) {
+                    return UC_ERR_ARG;
+                }
+                CHECK_REG_TYPE(uint32_t);
+                arm_v8m_banked_write(env, regid, *(uint32_t *)value);
+            }
             break;
         }
     }

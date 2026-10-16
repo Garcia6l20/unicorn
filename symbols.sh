@@ -2140,6 +2140,7 @@ armv7m_nvic_set_pending \
 helper_v7m_preserve_fp_state \
 write_v7m_exception \
 switch_v7m_security_state \
+write_v7m_control_spsel_for_secstate \
 helper_v7m_bxns \
 helper_v7m_blxns \
 armv7m_nvic_neg_prio_requested \
@@ -2924,6 +2925,7 @@ armv7m_nvic_set_pending \
 helper_v7m_preserve_fp_state \
 write_v7m_exception \
 switch_v7m_security_state \
+write_v7m_control_spsel_for_secstate \
 helper_v7m_bxns \
 helper_v7m_blxns \
 armv7m_nvic_neg_prio_requested \

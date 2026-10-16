@@ -337,9 +337,8 @@ void HELPER(v7m_preserve_fp_state)(CPUARMState *env)
  * stack pointers if it is done for the CONTROL register for the current
  * security state.
  */
-static void write_v7m_control_spsel_for_secstate(CPUARMState *env,
-                                                 bool new_spsel,
-                                                 bool secstate)
+void write_v7m_control_spsel_for_secstate(CPUARMState *env, bool new_spsel,
+                                          bool secstate)
 {
     bool old_is_psp = v7m_using_psp(env);
 
