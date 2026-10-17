@@ -1792,6 +1792,8 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
                     A better approach is not always invalidating tlb but this
                     might cause more chaos regarding re-entry (nested uc_emu_start).
         */
+        index = tlb_index(env, mmu_idx, addr);
+        entry = tlb_entry(env, mmu_idx, addr);
         if (tlb_entry_is_empty(entry)) {
             tlb_fill(env_cpu(env), addr, size,
                         access_type, mmu_idx, retaddr);
@@ -2337,6 +2339,8 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
         }
         tlb_hook_state_restore(env, &hook_state);
 
+        index = tlb_index(env, mmu_idx, addr);
+        entry = tlb_entry(env, mmu_idx, addr);
         if (tlb_entry_is_empty(entry)) {
             tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE,
                      mmu_idx, retaddr);
