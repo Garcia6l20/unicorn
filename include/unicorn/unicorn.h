@@ -921,8 +921,11 @@ typedef enum uc_control_type {
     UC_CTL_UC_REFUSE_MMIO,
     /**
      * Read the translation counts: the number of blocks translated since
-     * uc_open, temporary blocks included, and the number of blocks a lookup
-     * can return now. Meant for tests and benches. UC_ERR_ARG for a write.
+     * uc_open, temporary blocks included, and the number of blocks in the
+     * lookup hash table. The second count includes blocks no lookup returns
+     * any more, such as a split-page block of an older fetch generation or a
+     * block whose second page became split. Meant for tests and benches.
+     * UC_ERR_ARG for a write.
      * Read: @args = (uint64_t *translations, uint64_t *live) */
     UC_CTL_TB_TRANSLATIONS,
 } uc_control_type;
