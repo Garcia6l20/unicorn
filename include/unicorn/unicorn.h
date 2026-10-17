@@ -852,8 +852,11 @@ typedef enum uc_control_type {
     UC_CTL_UC_SLOW_PATH_COUNT,
     /**
      * Install the IDAU of the v8-M security lookup, a uc_arm_idau_cb and its
-     * user pointer. A NULL callback removes it. Flushes the TLB. UC_ARCH_ARM
-     * only, UC_ERR_ARG on other architectures and for a read.
+     * user pointer. A NULL callback removes it. Flushes the TLB. The callback
+     * gives no region bounds, so an IDAU region must cover whole TLB pages:
+     * an IDAU edge inside a page neither splits the page nor bounds a
+     * translated block, and a block can run across it. UC_ARCH_ARM only,
+     * UC_ERR_ARG on other architectures and for a read.
      * Write: @args = (uc_arm_idau_cb, void *)
      */
     UC_CTL_ARM_IDAU,
