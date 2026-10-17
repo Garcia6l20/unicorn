@@ -179,7 +179,7 @@ static uc_err uc_set_tlb(struct uc_struct *uc, int mode) {
     }
 }
 
-MemoryRegion *find_memory_mapping(struct uc_struct *uc, hwaddr address)
+QEMU_HOT MemoryRegion *find_memory_mapping(struct uc_struct *uc, hwaddr address)
 {
     hwaddr xlat = 0;
     hwaddr len = 1;

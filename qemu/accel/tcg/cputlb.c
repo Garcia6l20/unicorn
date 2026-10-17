@@ -835,7 +835,7 @@ static bool uc_mem_hooks_cover(struct uc_struct *uc, int idx, hwaddr first,
     return false;
 }
 
-void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
+QEMU_HOT void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
                              hwaddr paddr, MemTxAttrs attrs, int prot,
                              int mmu_idx, target_ulong size)
 {
@@ -1041,7 +1041,7 @@ static inline ram_addr_t qemu_ram_addr_from_host_nofail(struct uc_struct *uc, vo
  * caller's prior references to the TLB table (e.g. CPUTLBEntry pointers) must
  * be discarded and looked up again (e.g. via tlb_entry()).
  */
-static void tlb_fill(CPUState *cpu, target_ulong addr, int size,
+QEMU_HOT static void tlb_fill(CPUState *cpu, target_ulong addr, int size,
                      MMUAccessType access_type, int mmu_idx, uintptr_t retaddr)
 {
     CPUClass *cc = CPU_GET_CLASS(cpu);
@@ -1145,7 +1145,7 @@ static inline target_ulong tlb_read_ofs(CPUTLBEntry *entry, size_t ofs)
 
 /* Return true if ADDR is present in the victim tlb, and has been copied
    back to the main tlb.  */
-static bool victim_tlb_hit(CPUArchState *env, size_t mmu_idx, size_t index,
+QEMU_HOT static bool victim_tlb_hit(CPUArchState *env, size_t mmu_idx, size_t index,
                            size_t elt_ofs, target_ulong page)
 {
     size_t vidx;
@@ -1262,7 +1262,7 @@ tb_page_addr_t get_page_addr_code(CPUArchState *env, target_ulong addr)
     return get_page_addr_code_hostp(env, addr, NULL);
 }
 
-static void notdirty_write(CPUState *cpu, vaddr mem_vaddr, unsigned size,
+QEMU_HOT static void notdirty_write(CPUState *cpu, vaddr mem_vaddr, unsigned size,
                            CPUIOTLBEntry *iotlbentry, uintptr_t retaddr,
                            CPUTLBEntry *tlbe)
 {
@@ -1667,7 +1667,7 @@ load_memop(const void *haddr, MemOp op)
     }
 }
 
-static inline uint64_t
+QEMU_HOT static inline uint64_t
 load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
             uintptr_t retaddr, MemOp op, bool code_read,
             FullLoadHelper *full_load)
@@ -2356,7 +2356,7 @@ store_memop(void *haddr, uint64_t val, MemOp op)
     }
 }
 
-static inline void
+QEMU_HOT static inline void
 store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
              TCGMemOpIdx oi, uintptr_t retaddr, MemOp op)
 {

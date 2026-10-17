@@ -185,7 +185,7 @@ static uint32_t arm_fetch_window_end(struct uc_struct *uc, vaddr address,
     return end;
 }
 
-bool arm_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
+QEMU_HOT bool arm_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
                       MMUAccessType access_type, int mmu_idx,
                       bool probe, uintptr_t retaddr)
 {

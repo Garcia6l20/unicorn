@@ -69,6 +69,7 @@ static union MSVC_FLOAT_HACK __NAN = {{0x00, 0x00, 0xC0, 0x7F}};
 #define QEMU_ARTIFICIAL
 #define QEMU_PACK( __Declaration__ ) __pragma( pack(push, 1) ) __Declaration__ __pragma( pack(pop) )
 #define QEMU_NOINLINE __declspec(noinline)
+#define QEMU_HOT
 
 #define QEMU_ALIGN(A, B) __declspec(align(A)) B
 #define QEMU_ALIGNED(X)
@@ -132,6 +133,7 @@ static union MSVC_FLOAT_HACK __NAN = {{0x00, 0x00, 0xC0, 0x7F}};
 #define QEMU_ALIGNED(X) __attribute__((aligned(X)))
 
 #define QEMU_NOINLINE __attribute__((noinline))
+#define QEMU_HOT __attribute__((hot))
 
 #ifndef likely
 #if __GNUC__ < 3

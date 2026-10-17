@@ -642,7 +642,7 @@ static gint tb_page_addr_cmp(gconstpointer ap, gconstpointer bp, gpointer udata)
  * intersecting TBs.
  * Locking order: acquire locks in ascending order of page index.
  */
-struct page_collection *
+QEMU_HOT struct page_collection *
 page_collection_lock(struct uc_struct *uc, tb_page_addr_t start, tb_page_addr_t end)
 {
 #if 0
@@ -1992,7 +1992,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
  * user-mode: call with mmap_lock held.
  * !user-mode: call with all @pages locked.
  */
-static void
+QEMU_HOT static void
 tb_invalidate_phys_page_range__locked(struct uc_struct *uc, struct page_collection *pages,
                                       PageDesc *p, tb_page_addr_t start,
                                       tb_page_addr_t end,
@@ -2142,7 +2142,7 @@ void tb_invalidate_phys_range(struct uc_struct *uc, ram_addr_t start, ram_addr_t
  *
  * Call with all @pages in the range [@start, @start + len[ locked.
  */
-void tb_invalidate_phys_page_fast(struct uc_struct *uc, struct page_collection *pages,
+QEMU_HOT void tb_invalidate_phys_page_fast(struct uc_struct *uc, struct page_collection *pages,
                                   tb_page_addr_t start, int len,
                                   uintptr_t retaddr)
 {

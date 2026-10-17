@@ -10531,7 +10531,7 @@ static uint32_t v8m_sau_window_end(CPUARMState *env, uint32_t address)
     return end - page;
 }
 
-void v8m_security_lookup(CPUARMState *env, uint32_t address,
+QEMU_HOT void v8m_security_lookup(CPUARMState *env, uint32_t address,
                                 MMUAccessType access_type, ARMMMUIdx mmu_idx,
                                 V8M_SAttributes *sattrs)
 {
@@ -10647,7 +10647,7 @@ void v8m_security_lookup(CPUARMState *env, uint32_t address,
     }
 }
 
-bool pmsav8_mpu_lookup(CPUARMState *env, uint32_t address,
+QEMU_HOT bool pmsav8_mpu_lookup(CPUARMState *env, uint32_t address,
                               MMUAccessType access_type, ARMMMUIdx mmu_idx,
                               hwaddr *phys_ptr, MemTxAttrs *txattrs,
                               int *prot, bool *is_subpage,
@@ -10780,7 +10780,7 @@ bool pmsav8_mpu_lookup(CPUARMState *env, uint32_t address,
 }
 
 
-static bool get_phys_addr_pmsav8(CPUARMState *env, uint32_t address,
+QEMU_HOT static bool get_phys_addr_pmsav8(CPUARMState *env, uint32_t address,
                                  MMUAccessType access_type, ARMMMUIdx mmu_idx,
                                  hwaddr *phys_ptr, MemTxAttrs *txattrs,
                                  int *prot, target_ulong *page_size,
@@ -11056,7 +11056,7 @@ static ARMCacheAttrs combine_cacheattrs(ARMCacheAttrs s1, ARMCacheAttrs s2)
  * @fi: set to fault info if the translation fails
  * @cacheattrs: (if non-NULL) set to the cacheability/shareability attributes
  */
-bool get_phys_addr(CPUARMState *env, target_ulong address,
+QEMU_HOT bool get_phys_addr(CPUARMState *env, target_ulong address,
                    MMUAccessType access_type, ARMMMUIdx mmu_idx,
                    hwaddr *phys_ptr, MemTxAttrs *attrs, int *prot,
                    target_ulong *page_size,

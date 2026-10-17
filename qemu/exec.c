@@ -302,7 +302,7 @@ static MemoryRegionSection *address_space_lookup_region(AddressSpaceDispatch *d,
 }
 
 /* Called from RCU critical section */
-static MemoryRegionSection *
+QEMU_HOT static MemoryRegionSection *
 address_space_translate_internal(AddressSpaceDispatch *d, hwaddr addr, hwaddr *xlat,
                                  hwaddr *plen, bool resolve_subpage)
 {
@@ -469,7 +469,7 @@ static MemoryRegionSection flatview_do_translate(struct uc_struct *uc, FlatView 
 }
 
 /* Called from RCU critical section */
-MemoryRegion *flatview_translate(struct uc_struct *uc, FlatView *fv, hwaddr addr, hwaddr *xlat,
+QEMU_HOT MemoryRegion *flatview_translate(struct uc_struct *uc, FlatView *fv, hwaddr addr, hwaddr *xlat,
                                  hwaddr *plen, bool is_write,
                                  MemTxAttrs attrs)
 {
@@ -486,7 +486,7 @@ MemoryRegion *flatview_translate(struct uc_struct *uc, FlatView *fv, hwaddr addr
 }
 
 /* Called from RCU critical section */
-MemoryRegionSection *
+QEMU_HOT MemoryRegionSection *
 address_space_translate_for_iotlb(CPUState *cpu, int asidx, hwaddr addr,
                                   hwaddr *xlat, hwaddr *plen,
                                   MemTxAttrs attrs, int *prot)
@@ -698,7 +698,7 @@ void cpu_watchpoint_remove_all(CPUState *cpu, int mask)
 }
 
 /* Return flags for watchpoints that match addr + prot.  */
-int cpu_watchpoint_address_matches(CPUState *cpu, vaddr addr, vaddr len)
+QEMU_HOT int cpu_watchpoint_address_matches(CPUState *cpu, vaddr addr, vaddr len)
 {
 #if 0
     CPUWatchpoint *wp;
@@ -813,7 +813,7 @@ bool cpu_physical_memory_test_and_clear_dirty(ram_addr_t start,
 }
 
 /* Called from RCU critical section */
-hwaddr memory_region_section_get_iotlb(CPUState *cpu,
+QEMU_HOT hwaddr memory_region_section_get_iotlb(CPUState *cpu,
                                        MemoryRegionSection *section)
 {
     AddressSpaceDispatch *d = flatview_to_dispatch(section->fv);
@@ -1186,7 +1186,7 @@ void qemu_ram_free(struct uc_struct *uc, RAMBlock *block)
  *
  * Called within RCU critical section.
  */
-void *qemu_map_ram_ptr(struct uc_struct *uc, RAMBlock *ram_block, ram_addr_t addr)
+QEMU_HOT void *qemu_map_ram_ptr(struct uc_struct *uc, RAMBlock *ram_block, ram_addr_t addr)
 {
     RAMBlock *block = ram_block;
 
