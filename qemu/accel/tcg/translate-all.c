@@ -28,6 +28,7 @@
 #include "exec/ram_addr.h"
 
 #include "exec/cputlb.h"
+#include "exec/cpu_ldst.h"
 #include "exec/tb-hash.h"
 #include "translate-all.h"
 #include "qemu/bitmap.h"
@@ -1772,6 +1773,10 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     if (phys_pc == -1) {
         /* Generate a temporary TB; do not cache */
         cflags |= CF_NOCACHE;
+        if (tlb_entry(env, cpu_mmu_index(env, true), pc)->addr_code &
+            TLB_INVALID_MASK) {
+            cflags = (cflags & ~CF_COUNT_MASK) | 1;
+        }
     }
 
     cflags &= ~CF_CLUSTER_MASK;

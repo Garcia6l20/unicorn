@@ -3107,7 +3107,7 @@ static void test_arm_v8m_remove_cache_subpage(void)
     uint32_t kept = test_arm_v8m_subpage_leg(false);
 
     TEST_CHECK(removed == 2);
-    TEST_CHECK(kept == 1);
+    TEST_CHECK(kept == 2);
     TEST_MSG("removed r0 %u, without removal r0 %u", removed, kept);
 }
 
@@ -4173,6 +4173,52 @@ static void test_arm_bus_filter_no_security(void)
     }
 }
 
+#define SUBPAGE_CODE_SIZE 0x60
+#define SUBPAGE_BOUNDARY (code_start + 0x40)
+
+static void test_arm_subpage_boundary_leg(bool split, V8M_RUN *run,
+                                          uint32_t *r0)
+{
+    uc_engine *uc;
+    char code[SUBPAGE_CODE_SIZE];
+    size_t i;
+
+    for (i = 0; i < sizeof(code); i += 2) {
+        code[i] = 0x01;
+        code[i + 1] = 0x30;
+    }
+    uc = test_arm_v8m_open(code, sizeof(code), run);
+    OK(uc_ctl_arm_security(uc, 1));
+    if (split) {
+        test_arm_v8m_sau_region(uc, 0, SUBPAGE_BOUNDARY,
+                                SUBPAGE_BOUNDARY | V8M_SAU_ENABLE);
+    }
+    test_arm_v8m_reg(uc, UC_ARM_REG_SAU_CTRL, V8M_SAU_ENABLE);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0);
+    run->intno = -1;
+    run->pc = 0;
+    OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(code), 0, 0));
+    *r0 = test_arm_v8m_get(uc, UC_ARM_REG_R0);
+    OK(uc_close(uc));
+}
+
+static void test_arm_subpage_boundary_fetch(void)
+{
+    V8M_RUN run;
+    uint32_t r0 = 0;
+
+    test_arm_subpage_boundary_leg(true, &run, &r0);
+    TEST_CHECK(run.intno != -1);
+    TEST_CHECK(run.pc == SUBPAGE_BOUNDARY);
+    TEST_CHECK(r0 == (SUBPAGE_BOUNDARY - code_start) / 2);
+    TEST_MSG("split: intno %d pc 0x%x r0 %u", run.intno, run.pc, r0);
+
+    test_arm_subpage_boundary_leg(false, &run, &r0);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(r0 == SUBPAGE_CODE_SIZE / 2);
+    TEST_MSG("whole page Secure: intno %d r0 %u", run.intno, r0);
+}
+
 static uint32_t test_arm_v8m_nsacr_fpca(uint32_t nsacr)
 {
     uc_engine *uc;
@@ -4354,5 +4400,7 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_bus_filter_ram_only", test_arm_bus_filter_ram_only},
              {"test_arm_bus_filter_no_security",
               test_arm_bus_filter_no_security},
+             {"test_arm_subpage_boundary_fetch",
+              test_arm_subpage_boundary_fetch},
              {"test_arm_v8m_nsacr", test_arm_v8m_nsacr},
              {NULL, NULL}};

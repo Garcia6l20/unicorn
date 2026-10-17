@@ -838,8 +838,11 @@ typedef enum uc_control_type {
      * the TLB, so no page keeps a verdict from before the change. A flush
      * does not unlink chained translation blocks: code already chained
      * inside a page keeps running until the emulation stops, uc_emu_stop,
-     * even when its page is no longer fetchable. UC_ARCH_ARM only,
-     * UC_ERR_ARG on other architectures and for a read.
+     * even when its page is no longer fetchable. A page that an SAU region
+     * smaller than a page splits keeps no translation: each of its
+     * instructions is translated alone at every execution, so every fetch is
+     * attributed at its own address. UC_ARCH_ARM only, UC_ERR_ARG on other
+     * architectures and for a read.
      * Write: @args = (int)
      */
     UC_CTL_ARM_SECURITY,
