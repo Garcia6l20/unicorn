@@ -882,6 +882,7 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
             }
             CHECK_REG_TYPE(uint32_t);
             env->v7m.nsacr = *(uint32_t *)value & 0xcff;
+            arm_rebuild_hflags(env);
             break;
         case UC_ARM_REG_FAULT_STATUS:
         case UC_ARM_REG_FAULT_ADDRESS:

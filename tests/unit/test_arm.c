@@ -1911,6 +1911,7 @@ static void test_arm_exit_after_insn_other_arch(void)
 }
 
 #define V8M_EXCP_PREFETCH_ABORT 3
+#define V8M_EXCP_NOCP 17
 #define V8M_STEP_BOUND 16
 
 typedef struct _V8M_RUN {
@@ -4552,6 +4553,39 @@ static uint32_t test_arm_v8m_nsacr_fpca(uint32_t nsacr)
     return control & V8M_CONTROL_FPCA;
 }
 
+static void test_arm_v8m_nsacr_fp_leg(uc_engine *uc, V8M_RUN *run,
+                                      uint32_t nsacr, int intno)
+{
+    test_arm_v8m_reg(uc, UC_ARM_REG_NSACR, nsacr);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0x5ec00001);
+    test_arm_v8m_reg(uc, UC_ARM_REG_S0, 0);
+    test_arm_v8m_run(uc, run, code_start, code_start + 4);
+    TEST_CHECK(run->intno == intno);
+    if (intno == -1) {
+        TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_S0) == 0x5ec00001);
+    } else {
+        TEST_CHECK(run->pc == code_start);
+        TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_S0) == 0);
+    }
+}
+
+static void test_arm_v8m_nsacr_fp(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    char code[] = "\x00\xee\x10\x0a\x00\xbf";
+
+    uc = test_arm_v8m_ns_open(code, sizeof(code) - 1, &run);
+    test_arm_v8m_nsacr_fp_leg(uc, &run, 0xc00, -1);
+    test_arm_v8m_nsacr_fp_leg(uc, &run, 0, V8M_EXCP_NOCP);
+    test_arm_v8m_nsacr_fp_leg(uc, &run, 0xc00, -1);
+    OK(uc_close(uc));
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    test_arm_v8m_nsacr_fp_leg(uc, &run, 0, -1);
+    OK(uc_close(uc));
+}
+
 static void test_arm_v8m_nsacr(void)
 {
     uc_engine *uc;
@@ -4724,5 +4758,6 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_bus_filter_fetch_each_straddle",
               test_arm_bus_filter_fetch_each_straddle},
              {"test_arm_subpage_straddle", test_arm_subpage_straddle},
+             {"test_arm_v8m_nsacr_fp", test_arm_v8m_nsacr_fp},
              {"test_arm_v8m_nsacr", test_arm_v8m_nsacr},
              {NULL, NULL}};
