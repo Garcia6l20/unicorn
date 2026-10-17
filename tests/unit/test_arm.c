@@ -3935,6 +3935,44 @@ static void test_arm_bus_filter_unaligned(void)
     OK(uc_close(uc));
 }
 
+static void test_arm_bus_filter_install_hook(uc_engine *uc, uc_mem_type type,
+                                             uint64_t address, int size,
+                                             int64_t value, void *user_data)
+{
+    BUS_LOG *log = user_data;
+
+    if (log->page_fills == 0) {
+        test_arm_bus_install(uc, log);
+    }
+}
+
+static void test_arm_bus_filter_read_hook_installs(void)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    V8M_RUN run;
+    BUS_LOG log;
+    char code[] = "\x11\x68";
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    test_arm_bus_put(uc, BUS_PAGE, BUS_WORD);
+    test_arm_bus_log(&log, BUS_PAGE, UC_BUS_FILTER_DATA, UC_BUS_RAZ_WI);
+    log.raz_value = 0xa5;
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_READ,
+                   test_arm_bus_filter_install_hook, &log, BUS_PAGE,
+                   BUS_PAGE + 3));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0xffffffff);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, BUS_PAGE);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 2);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R1) == 0xa5);
+    TEST_CHECK(log.accesses == 1);
+    TEST_CHECK(log.address == BUS_PAGE && log.size == 4);
+    TEST_MSG("r1 0x%x accesses %d", test_arm_v8m_get(uc, UC_ARM_REG_R1),
+             log.accesses);
+    OK(uc_close(uc));
+}
+
 typedef struct _BUS_HOOKS {
     int reads;
     int writes;
@@ -5283,6 +5321,8 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_bus_filter_remove_new_code",
               test_arm_bus_filter_remove_new_code},
              {"test_arm_bus_filter_unaligned", test_arm_bus_filter_unaligned},
+             {"test_arm_bus_filter_read_hook_installs",
+              test_arm_bus_filter_read_hook_installs},
              {"test_arm_bus_filter_chained_data",
               test_arm_bus_filter_chained_data},
              {"test_arm_bus_filter_exit_after_insn",

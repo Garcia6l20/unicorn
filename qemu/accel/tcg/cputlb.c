@@ -1059,9 +1059,10 @@ QEMU_HOT static void tlb_fill(CPUState *cpu, target_ulong addr, int size,
 #endif
 }
 
-static uint64_t io_readx(CPUArchState *env, CPUIOTLBEntry *iotlbentry,
-                         int mmu_idx, target_ulong addr, uintptr_t retaddr,
-                         MMUAccessType access_type, MemOp op)
+static QEMU_NOINLINE uint64_t
+io_readx(CPUArchState *env, CPUIOTLBEntry *iotlbentry, int mmu_idx,
+         target_ulong addr, uintptr_t retaddr, MMUAccessType access_type,
+         MemOp op)
 {
     CPUState *cpu = env_cpu(env);
     struct uc_struct *uc = cpu->uc;
@@ -1643,6 +1644,25 @@ bus_filter_allows_store(CPUArchState *env, CPUIOTLBEntry *iotlbentry,
                              MMU_DATA_STORE, mmu_idx, &value, retaddr);
 }
 
+typedef struct BusFilterLoad {
+    bool allowed;
+    uint64_t value;
+} BusFilterLoad;
+
+static QEMU_NOINLINE BusFilterLoad
+bus_filter_allows_load(CPUArchState *env, CPUIOTLBEntry *iotlbentry,
+                       target_ulong addr, hwaddr paddr, unsigned size,
+                       MMUAccessType access_type, int mmu_idx,
+                       uintptr_t retaddr)
+{
+    BusFilterLoad result = {false, 0};
+
+    result.allowed = bus_filter_allows(env, iotlbentry, addr, paddr, size,
+                                       access_type, mmu_idx, &result.value,
+                                       retaddr);
+    return result;
+}
+
 static inline uint64_t
 load_memop(const void *haddr, MemOp op)
 {
@@ -1817,16 +1837,15 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
     filtered = !code_read && (tlb_addr & TLB_WATCHPOINT) &&
                env_tlb(env)->d[mmu_idx].iotlb[index].bus_filter;
     if (filtered && (addr & (size - 1)) == 0) {
-        uint64_t value = 0;
-        bool allowed;
+        BusFilterLoad verdict;
 
         tlb_hook_state_sync(env, retaddr, &hook_state);
-        allowed = bus_filter_allows(env, &env_tlb(env)->d[mmu_idx].iotlb[index],
-                                    addr, paddr, size, access_type, mmu_idx,
-                                    &value, retaddr);
+        verdict = bus_filter_allows_load(
+            env, &env_tlb(env)->d[mmu_idx].iotlb[index], addr, paddr, size,
+            access_type, mmu_idx, retaddr);
         tlb_hook_state_restore(env, &hook_state);
-        if (!allowed) {
-            res = value & MAKE_64BIT_MASK(0, size * 8);
+        if (!verdict.allowed) {
+            res = verdict.value & MAKE_64BIT_MASK(0, size * 8);
             goto _out;
         }
         filter_judged = true;
@@ -1970,11 +1989,12 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
             cpu_check_watchpoint(env_cpu(env), addr, size,
                                  iotlbentry->attrs, BP_MEM_READ, retaddr);
             if (iotlbentry->bus_filter && !code_read && !filter_judged) {
-                uint64_t value = 0;
+                BusFilterLoad verdict = bus_filter_allows_load(
+                    env, iotlbentry, addr, paddr, size, access_type, mmu_idx,
+                    retaddr);
 
-                if (!bus_filter_allows(env, iotlbentry, addr, paddr, size,
-                                       access_type, mmu_idx, &value, retaddr)) {
-                    res = value & MAKE_64BIT_MASK(0, size * 8);
+                if (!verdict.allowed) {
+                    res = verdict.value & MAKE_64BIT_MASK(0, size * 8);
                     goto _out;
                 }
             }
