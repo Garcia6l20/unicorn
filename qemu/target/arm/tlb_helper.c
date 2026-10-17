@@ -224,6 +224,10 @@ bool arm_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
             }
             prot &= ~PAGE_EXEC;
         }
+        if (access_type == MMU_INST_FETCH) {
+            uc->bus_fill_fetch_end =
+                arm_fetch_window_end(uc, address, page_size, verdict);
+        }
         /*
          * Map a single [sub]page. Regions smaller than our declared
          * target page size are handled specially, so for those we
@@ -235,10 +239,6 @@ bool arm_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
         }
         uc->bus_fill_filter = (verdict & UC_BUS_FILTER_DATA) != 0;
         uc->bus_fill_fetch_each = (verdict & UC_BUS_FETCH_EACH) != 0;
-        if (access_type == MMU_INST_FETCH) {
-            uc->bus_fill_fetch_end =
-                arm_fetch_window_end(uc, address, page_size, verdict);
-        }
         tlb_set_page_with_attrs(cs, address, phys_addr, attrs,
                                 prot, mmu_idx, page_size);
         uc->bus_fill_filter = false;

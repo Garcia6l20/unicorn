@@ -4623,7 +4623,6 @@ static void test_arm_v8m_nsacr(void)
 }
 
 #define SPLIT_HOLE (code_start + 0x200)
-#define SPLIT_EDGE (code_start + 0x40)
 #define SPLIT_LOOPS 1000
 #define SPLIT_COUNT 2000
 #define SPLIT_FLIP 1000
@@ -4694,22 +4693,23 @@ static uint64_t test_arm_live_blocks(uc_engine *uc)
     return live;
 }
 
-static uint64_t test_arm_split_cached_leg(bool sau, unsigned shift,
+static uint64_t test_arm_split_cached_leg(bool sau, unsigned shift, uint64_t at,
                                           uint32_t *r0)
 {
     uc_engine *uc;
     V8M_RUN run;
-    SPLIT_BUS bus = {SPLIT_HOLE, 0x20, shift, 0, true};
+    SPLIT_BUS bus = {at == code_start ? SPLIT_HOLE : code_start,
+                     at == code_start ? 0x20 : at - code_start, shift, 0, true};
     char loop[] = "\x01\x30\x01\x3b\xfc\xd1\x00\xbf";
     uint64_t before;
     uint64_t count;
 
-    uc = test_arm_split_open(loop, sizeof(loop) - 1, &run, sau, &bus);
+    uc = test_arm_split_open("\x00\xbf", 2, &run, sau, &bus);
+    OK(uc_mem_write(uc, at, loop, sizeof(loop) - 1));
     test_arm_v8m_reg(uc, UC_ARM_REG_R3, SPLIT_LOOPS);
     before = test_arm_translations(uc);
     run.intno = -1;
-    OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(loop) - 1, 0,
-                    4 * SPLIT_LOOPS));
+    OK(uc_emu_start(uc, at | 1, at + sizeof(loop) - 1, 0, 4 * SPLIT_LOOPS));
     TEST_CHECK(run.intno == -1);
     count = test_arm_translations(uc) - before;
     *r0 = test_arm_v8m_get(uc, UC_ARM_REG_R0);
@@ -4722,27 +4722,34 @@ static void test_arm_split_page_cached(void)
     uint32_t r0 = 0;
     uint64_t count;
 
-    count = test_arm_split_cached_leg(true, 0, &r0);
+    count = test_arm_split_cached_leg(true, 0, code_start, &r0);
     TEST_CHECK(r0 == SPLIT_LOOPS);
     TEST_CHECK(count <= 3);
     TEST_MSG("SAU split: r0 %u translations %" PRIu64, r0, count);
 
-    count = test_arm_split_cached_leg(false, 9, &r0);
+    count = test_arm_split_cached_leg(false, 9, code_start, &r0);
     TEST_CHECK(r0 == SPLIT_LOOPS);
     TEST_CHECK(count <= 3);
     TEST_MSG("fetch window 9: r0 %u translations %" PRIu64, r0, count);
 
-    count = test_arm_split_cached_leg(false, 0, &r0);
+    count = test_arm_split_cached_leg(false, 9, SPLIT_HOLE, &r0);
+    TEST_CHECK(r0 == SPLIT_LOOPS);
+    TEST_CHECK(count <= 3);
+    TEST_MSG("fetch window 9, upper window: r0 %u translations %" PRIu64, r0,
+             count);
+
+    count = test_arm_split_cached_leg(false, 0, code_start, &r0);
     TEST_CHECK(r0 == SPLIT_LOOPS);
     TEST_CHECK(count >= 3 * SPLIT_LOOPS);
     TEST_MSG("fetch window 0: r0 %u translations %" PRIu64, r0, count);
 }
 
-static void test_arm_split_edge_leg(const char *name, bool sau, unsigned shift)
+static void test_arm_split_edge_leg(const char *name, bool sau, unsigned shift,
+                                    uint64_t start)
 {
     uc_engine *uc;
     V8M_RUN run;
-    SPLIT_BUS bus = {SPLIT_EDGE, 0x40, shift, 0, true};
+    SPLIT_BUS bus = {start + 0x40, 0x40, shift, 0, true};
     char code[0x80];
     uint64_t before;
     size_t i;
@@ -4752,18 +4759,18 @@ static void test_arm_split_edge_leg(const char *name, bool sau, unsigned shift)
         code[i] = 0x01;
         code[i + 1] = 0x30;
     }
-    uc = test_arm_split_open(code, sizeof(code), &run, sau, &bus);
+    uc = test_arm_split_open("\x00\xbf", 2, &run, sau, &bus);
+    OK(uc_mem_write(uc, start, code, sizeof(code)));
     for (pass = 0; pass < 2; pass++) {
         test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0);
         before = test_arm_translations(uc);
         run.intno = -1;
         run.pc = 0;
-        OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(code), 0,
-                        sizeof(code)));
+        OK(uc_emu_start(uc, start | 1, start + sizeof(code), 0, sizeof(code)));
         TEST_CHECK(run.intno != -1);
-        TEST_CHECK(run.pc == SPLIT_EDGE);
+        TEST_CHECK(run.pc == bus.denied);
         TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) ==
-                   (SPLIT_EDGE - code_start) / 2);
+                   (bus.denied - start) / 2);
         TEST_CHECK(pass == 0 || (!sau && shift == 0) ||
                    test_arm_translations(uc) == before);
         TEST_MSG("%s, pass %d: intno %d pc 0x%x r0 %u translations %" PRIu64,
@@ -4776,9 +4783,11 @@ static void test_arm_split_edge_leg(const char *name, bool sau, unsigned shift)
 
 static void test_arm_split_page_window_edge(void)
 {
-    test_arm_split_edge_leg("SAU split", true, 0);
-    test_arm_split_edge_leg("fetch window 6", false, 6);
-    test_arm_split_edge_leg("fetch window 0", false, 0);
+    test_arm_split_edge_leg("SAU split", true, 0, code_start);
+    test_arm_split_edge_leg("fetch window 6", false, 6, code_start);
+    test_arm_split_edge_leg("fetch window 6, second window", false, 6,
+                            code_start + 0x40);
+    test_arm_split_edge_leg("fetch window 0", false, 0, code_start);
 }
 
 static void test_arm_split_straddle_store(uc_engine *uc, uc_mem_type type,
