@@ -419,10 +419,10 @@ typedef enum uc_bus_page_verdict {
     UC_BUS_FILTER_DATA = 1,
     UC_BUS_DENY_FETCH = 2,
     UC_BUS_FETCH_EACH = 4,
-    UC_BUS_FETCH_WINDOW_SHIFT = 8,
-    UC_BUS_FETCH_WINDOW_MASK = 0x1f00,
 } uc_bus_page_verdict;
 
+#define UC_BUS_FETCH_WINDOW_SHIFT 8
+#define UC_BUS_FETCH_WINDOW_MASK 0x1f00
 #define UC_BUS_FETCH_WINDOW(shift)                                             \
     (((unsigned)(shift) << UC_BUS_FETCH_WINDOW_SHIFT) &                        \
      UC_BUS_FETCH_WINDOW_MASK)
