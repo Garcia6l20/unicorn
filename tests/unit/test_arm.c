@@ -5056,7 +5056,8 @@ static void test_arm_tb_translations(void)
     TEST_CHECK(live == 0);
     test_arm_v8m_reg(uc, UC_ARM_REG_R3, V8M_LOOP_COUNT);
     run.intno = -1;
-    OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(loop) - 1, 0, 0));
+    OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(loop) - 1, 0,
+                    4 * V8M_LOOP_COUNT));
     TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == V8M_LOOP_COUNT);
     OK(uc_ctl_tb_translations(uc, &translations, &live));
     TEST_CHECK(translations >= 1 && translations <= 3);
