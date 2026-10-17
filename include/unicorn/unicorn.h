@@ -398,11 +398,17 @@ typedef void (*uc_cb_mmio_write_attrs_t)(uc_engine *uc, uint64_t offset,
  * @brief Page verdict bits of a uc_cb_bus_page_t.
  * UC_BUS_FILTER_DATA sends every data load and store of the page through
  * the uc_cb_bus_access_t. UC_BUS_DENY_FETCH makes an instruction fetch from
- * the page a prefetch abort, an external abort, EXCP_PREFETCH_ABORT. 0
- * leaves the page on the fast path. */
+ * the page a prefetch abort, an external abort, EXCP_PREFETCH_ABORT.
+ * UC_BUS_FETCH_EACH keeps no fetch verdict for the page: every instruction
+ * fetch fills the TLB again and calls the uc_cb_bus_page_t with its own
+ * address, and each instruction of the page is translated alone at every
+ * execution, as on a page an SAU region smaller than a page splits. Data
+ * accesses keep the verdict of the fill. 0 leaves the page on the fast
+ * path. */
 typedef enum uc_bus_page_verdict {
     UC_BUS_FILTER_DATA = 1,
     UC_BUS_DENY_FETCH = 2,
+    UC_BUS_FETCH_EACH = 4,
 } uc_bus_page_verdict;
 
 /**
@@ -439,7 +445,8 @@ typedef enum uc_bus_access_verdict {
  * @param access_type UC_MEM_READ, UC_MEM_WRITE or UC_MEM_FETCH, the access
  *        that caused the fill.
  * @param user_data User data passed to uc_ctl_bus_filter().
- * @return An OR of UC_BUS_FILTER_DATA and UC_BUS_DENY_FETCH, or 0. */
+ * @return An OR of UC_BUS_FILTER_DATA, UC_BUS_DENY_FETCH and
+ *         UC_BUS_FETCH_EACH, or 0. */
 typedef unsigned (*uc_cb_bus_page_t)(uc_engine *uc, uint64_t page,
                                      uint64_t address, uc_mem_attrs attrs,
                                      uc_mem_type access_type, void *user_data);

@@ -986,6 +986,9 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
 
     if (prot & PAGE_EXEC) {
         tn.addr_code = address;
+        if (is_ram && cpu->uc->bus_fill_fetch_each) {
+            tn.addr_code |= TLB_INVALID_MASK;
+        }
     } else {
         tn.addr_code = -1;
     }

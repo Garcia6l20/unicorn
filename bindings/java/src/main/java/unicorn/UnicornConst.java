@@ -97,6 +97,7 @@ public interface UnicornConst {
     public static final int UC_MEM_READ_AFTER = 25;
     public static final int UC_BUS_FILTER_DATA = 1;
     public static final int UC_BUS_DENY_FETCH = 2;
+    public static final int UC_BUS_FETCH_EACH = 4;
 
     public static final int UC_BUS_ALLOW = 0;
     public static final int UC_BUS_RAZ_WI = 1;

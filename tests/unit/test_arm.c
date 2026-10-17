@@ -4173,6 +4173,139 @@ static void test_arm_bus_filter_no_security(void)
     }
 }
 
+#define BLOCK_HIGH (code_start + 0x200)
+
+typedef struct _BUS_BLOCKS {
+    BUS_LOG log;
+    uint64_t denied;
+    bool each;
+    int fetch_fills;
+} BUS_BLOCKS;
+
+static unsigned test_arm_bus_block_page(uc_engine *uc, uint64_t page,
+                                        uint64_t address, uc_mem_attrs attrs,
+                                        uc_mem_type access_type,
+                                        void *user_data)
+{
+    BUS_BLOCKS *blocks = user_data;
+    unsigned verdict = blocks->each ? UC_BUS_FETCH_EACH : 0;
+
+    if (page != code_start) {
+        return 0;
+    }
+    if (access_type == UC_MEM_FETCH) {
+        blocks->fetch_fills++;
+    }
+    if (address >= blocks->denied && address < blocks->denied + 0x200) {
+        verdict |= UC_BUS_DENY_FETCH;
+    }
+    return verdict;
+}
+
+static uc_engine *test_arm_bus_blocks_open(BUS_BLOCKS *blocks, V8M_RUN *run,
+                                           uint64_t denied, bool each)
+{
+    uc_engine *uc;
+    char nop[] = "\x00\xbf";
+
+    uc = test_arm_v8m_open(nop, sizeof(nop) - 1, run);
+    test_arm_bus_log(&blocks->log, code_start, 0, UC_BUS_ALLOW);
+    blocks->denied = denied;
+    blocks->each = each;
+    blocks->fetch_fills = 0;
+    OK(uc_ctl_bus_filter(uc, test_arm_bus_block_page, test_arm_bus_access,
+                         blocks));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0);
+    return uc;
+}
+
+static void test_arm_bus_adds(uc_engine *uc, uint64_t at, int count)
+{
+    char adds[] = "\x01\x30";
+    int i;
+
+    for (i = 0; i < count; i++) {
+        OK(uc_mem_write(uc, at + 2 * i, adds, 2));
+    }
+}
+
+static void test_arm_bus_into_high_leg(bool each, V8M_RUN *run, uint32_t *r0,
+                                       int *fills)
+{
+    BUS_BLOCKS blocks;
+    uc_engine *uc = test_arm_bus_blocks_open(&blocks, run, BLOCK_HIGH, each);
+
+    test_arm_bus_adds(uc, BLOCK_HIGH - 0x10, 16);
+    run->intno = -1;
+    run->pc = 0;
+    OK(uc_emu_start(uc, (BLOCK_HIGH - 0x10) | 1, BLOCK_HIGH + 0x10, 0, 64));
+    *r0 = test_arm_v8m_get(uc, UC_ARM_REG_R0);
+    *fills = blocks.fetch_fills;
+    OK(uc_close(uc));
+}
+
+static void test_arm_bus_into_low_leg(bool each, V8M_RUN *run, uint32_t *r0)
+{
+    BUS_BLOCKS blocks;
+    char branch[] = "\xfd\xe6";
+    uc_engine *uc = test_arm_bus_blocks_open(&blocks, run, code_start, each);
+
+    test_arm_bus_adds(uc, code_start, 1);
+    test_arm_bus_adds(uc, BLOCK_HIGH, 1);
+    OK(uc_mem_write(uc, BLOCK_HIGH + 2, branch, 2));
+    run->intno = -1;
+    run->pc = 0;
+    OK(uc_emu_start(uc, BLOCK_HIGH | 1, code_start + 2, 0, 64));
+    *r0 = test_arm_v8m_get(uc, UC_ARM_REG_R0);
+    OK(uc_close(uc));
+}
+
+static void test_arm_bus_filter_fetch_each(void)
+{
+    V8M_RUN run;
+    BUS_BLOCKS blocks;
+    uc_engine *uc;
+    uint32_t r0 = 0;
+    int fills = 0;
+    char load[] = "\x08\x68";
+
+    test_arm_bus_into_high_leg(true, &run, &r0, &fills);
+    TEST_CHECK(run.intno == V8M_EXCP_PREFETCH_ABORT);
+    TEST_CHECK(run.pc == BLOCK_HIGH);
+    TEST_CHECK(r0 == 8);
+    TEST_CHECK(fills >= 9);
+    TEST_MSG("into the high block: intno %d pc 0x%x r0 %u fills %d",
+             run.intno, run.pc, r0, fills);
+
+    test_arm_bus_into_high_leg(false, &run, &r0, &fills);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(r0 == 16);
+    TEST_MSG("into the high block, verdict kept: intno %d r0 %u fills %d",
+             run.intno, r0, fills);
+
+    test_arm_bus_into_low_leg(true, &run, &r0);
+    TEST_CHECK(run.intno == V8M_EXCP_PREFETCH_ABORT);
+    TEST_CHECK(run.pc == code_start);
+    TEST_CHECK(r0 == 1);
+    TEST_MSG("into the low block: intno %d pc 0x%x r0 %u", run.intno, run.pc,
+             r0);
+
+    test_arm_bus_into_low_leg(false, &run, &r0);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(r0 == 2);
+    TEST_MSG("into the low block, verdict kept: intno %d r0 %u", run.intno,
+             r0);
+
+    uc = test_arm_bus_blocks_open(&blocks, &run, BLOCK_HIGH, true);
+    OK(uc_mem_write(uc, code_start, load, sizeof(load) - 1));
+    test_arm_bus_put(uc, BLOCK_HIGH + 0x100, BUS_WORD);
+    test_arm_v8m_load(uc, &run, BLOCK_HIGH + 0x100);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == BUS_WORD);
+    TEST_CHECK(blocks.log.accesses == 0);
+    OK(uc_close(uc));
+}
+
 #define SUBPAGE_CODE_SIZE 0x60
 #define SUBPAGE_BOUNDARY (code_start + 0x40)
 
@@ -4402,5 +4535,6 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
               test_arm_bus_filter_no_security},
              {"test_arm_subpage_boundary_fetch",
               test_arm_subpage_boundary_fetch},
+             {"test_arm_bus_filter_fetch_each", test_arm_bus_filter_fetch_each},
              {"test_arm_v8m_nsacr", test_arm_v8m_nsacr},
              {NULL, NULL}};

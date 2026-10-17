@@ -212,9 +212,11 @@ bool arm_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
             address &= TARGET_PAGE_MASK;
         }
         uc->bus_fill_filter = (verdict & UC_BUS_FILTER_DATA) != 0;
+        uc->bus_fill_fetch_each = (verdict & UC_BUS_FETCH_EACH) != 0;
         tlb_set_page_with_attrs(cs, address, phys_addr, attrs,
                                 prot, mmu_idx, page_size);
         uc->bus_fill_filter = false;
+        uc->bus_fill_fetch_each = false;
         return true;
     } else if (probe) {
         return false;

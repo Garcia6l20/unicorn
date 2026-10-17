@@ -418,6 +418,7 @@ struct uc_struct {
     uc_cb_bus_access_t bus_access_cb;
     void *bus_filter_user;
     bool bus_fill_filter;
+    bool bus_fill_fetch_each;
 
     int use_exits;
     uint64_t exits[UC_MAX_NESTED_LEVEL]; // When multiple exits is not enabled.
