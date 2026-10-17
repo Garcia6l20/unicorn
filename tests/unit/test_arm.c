@@ -4306,6 +4306,124 @@ static void test_arm_bus_filter_fetch_each(void)
     OK(uc_close(uc));
 }
 
+#define STRADDLE_LOOP (code_start + 0x3f4)
+#define STRADDLE_MOVW (code_start + 0x3fe)
+#define STRADDLE_PAGE (code_start + 0x400)
+#define STRADDLE_EXIT (code_start + 0x406)
+#define STRADDLE_DATA 0x2000
+#define STRADDLE_COUNT 3000
+#define STRADDLE_FLIP 1000
+
+typedef struct _BUS_STRADDLE {
+    bool sau;
+    bool flip;
+    bool denied;
+    int stores;
+} BUS_STRADDLE;
+
+static unsigned test_arm_bus_straddle_page(uc_engine *uc, uint64_t page,
+                                           uint64_t address, uc_mem_attrs attrs,
+                                           uc_mem_type access_type,
+                                           void *user_data)
+{
+    BUS_STRADDLE *straddle = user_data;
+
+    if (page != STRADDLE_PAGE) {
+        return 0;
+    }
+    if (straddle->denied && address < STRADDLE_PAGE + 0x200) {
+        return UC_BUS_FETCH_EACH | UC_BUS_DENY_FETCH;
+    }
+    return UC_BUS_FETCH_EACH;
+}
+
+static int test_arm_bus_straddle_access(uc_engine *uc, uint64_t address,
+                                        unsigned size, uc_mem_attrs attrs,
+                                        uc_mem_type access_type,
+                                        uint64_t *value, void *user_data)
+{
+    return UC_BUS_ALLOW;
+}
+
+static void test_arm_bus_straddle_store(uc_engine *uc, uc_mem_type type,
+                                        uint64_t address, int size,
+                                        int64_t value, void *user_data)
+{
+    BUS_STRADDLE *straddle = user_data;
+
+    if (++straddle->stores != STRADDLE_FLIP || !straddle->flip) {
+        return;
+    }
+    if (straddle->sau) {
+        test_arm_v8m_sau_region(uc, 0, STRADDLE_PAGE,
+                                STRADDLE_PAGE | V8M_SAU_ENABLE);
+        return;
+    }
+    straddle->denied = true;
+    OK(uc_ctl_flush_tlb(uc));
+}
+
+static void test_arm_bus_straddle_leg(bool sau, bool flip, V8M_RUN *run,
+                                      uint32_t *r3)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    BUS_STRADDLE straddle = {sau, flip, false, 0};
+    char loop[] = "\x10\x60\x01\x30\x01\x3b\x04\xd0\x00\xbf"
+                  "\x40\xf2\x00\x01\xf7\xe7\x00\xbf\x00\xbf";
+
+    uc = test_arm_v8m_open("\x00\xbf", 2, run);
+    OK(uc_mem_write(uc, STRADDLE_LOOP, loop, sizeof(loop) - 1));
+    if (sau) {
+        OK(uc_ctl_arm_security(uc, 1));
+        test_arm_v8m_sau_region(uc, 0, STRADDLE_PAGE + 0x20,
+                                (STRADDLE_PAGE + 0x20) | V8M_SAU_ENABLE);
+        test_arm_v8m_reg(uc, UC_ARM_REG_SAU_CTRL, V8M_SAU_ENABLE);
+    } else {
+        OK(uc_ctl_bus_filter(uc, test_arm_bus_straddle_page,
+                             test_arm_bus_straddle_access, &straddle));
+    }
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_WRITE, test_arm_bus_straddle_store,
+                   &straddle, STRADDLE_DATA, STRADDLE_DATA + 3));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, STRADDLE_DATA);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, STRADDLE_COUNT);
+    run->intno = -1;
+    run->pc = 0;
+    OK(uc_emu_start(uc, STRADDLE_LOOP | 1, STRADDLE_EXIT, 0,
+                    9 * STRADDLE_COUNT));
+    *r3 = test_arm_v8m_get(uc, UC_ARM_REG_R3);
+    OK(uc_close(uc));
+}
+
+static void test_arm_bus_straddle_check(bool sau)
+{
+    V8M_RUN run;
+    uint32_t r3 = 0;
+
+    test_arm_bus_straddle_leg(sau, true, &run, &r3);
+    TEST_CHECK(run.intno == V8M_EXCP_PREFETCH_ABORT);
+    TEST_CHECK(run.pc == STRADDLE_MOVW);
+    TEST_CHECK(r3 == STRADDLE_COUNT - STRADDLE_FLIP);
+    TEST_MSG("%s, verdict changed: intno %d pc 0x%x r3 %u",
+             sau ? "SAU" : "fetch each", run.intno, run.pc, r3);
+
+    test_arm_bus_straddle_leg(sau, false, &run, &r3);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(r3 == 0);
+    TEST_MSG("%s, verdict kept: intno %d r3 %u", sau ? "SAU" : "fetch each",
+             run.intno, r3);
+}
+
+static void test_arm_bus_filter_fetch_each_straddle(void)
+{
+    test_arm_bus_straddle_check(false);
+}
+
+static void test_arm_subpage_straddle(void)
+{
+    test_arm_bus_straddle_check(true);
+}
+
 #define SUBPAGE_CODE_SIZE 0x60
 #define SUBPAGE_BOUNDARY (code_start + 0x40)
 
@@ -4536,5 +4654,8 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_subpage_boundary_fetch",
               test_arm_subpage_boundary_fetch},
              {"test_arm_bus_filter_fetch_each", test_arm_bus_filter_fetch_each},
+             {"test_arm_bus_filter_fetch_each_straddle",
+              test_arm_bus_filter_fetch_each_straddle},
+             {"test_arm_subpage_straddle", test_arm_subpage_straddle},
              {"test_arm_v8m_nsacr", test_arm_v8m_nsacr},
              {NULL, NULL}};

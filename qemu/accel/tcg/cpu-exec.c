@@ -283,7 +283,7 @@ static inline TranslationBlock *tb_find(CPUState *cpu,
      * system emulation. So it's not safe to make a direct jump to a TB
      * spanning two pages because the mapping for the second page can change.
      */
-    if (tb->page_addr[1] != -1) {
+    if (tb->page_addr[1] != -1 || (tb_cflags(tb) & CF_NOCACHE)) {
         last_tb = NULL;
     }
     /* See if we can patch the calling TB. */

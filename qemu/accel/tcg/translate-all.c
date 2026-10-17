@@ -1899,6 +1899,11 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     phys_page2 = -1;
     if ((pc & TARGET_PAGE_MASK) != virt_page2) {
         phys_page2 = get_page_addr_code(env, virt_page2);
+        if (phys_page2 == -1 && phys_pc != -1) {
+            tb->cflags = (tb->cflags & ~CF_COUNT_MASK) | CF_NOCACHE |
+                         MIN(tb->icount, CF_COUNT_MASK);
+            phys_pc = -1;
+        }
     }
 
     /* Undoes tlb_set_dirty in notdirty_write. */
