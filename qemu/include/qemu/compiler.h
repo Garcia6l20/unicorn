@@ -133,7 +133,11 @@ static union MSVC_FLOAT_HACK __NAN = {{0x00, 0x00, 0xC0, 0x7F}};
 #define QEMU_ALIGNED(X) __attribute__((aligned(X)))
 
 #define QEMU_NOINLINE __attribute__((noinline))
-#define QEMU_HOT __attribute__((hot))
+#if defined(__ELF__)
+#define QEMU_HOT __attribute__((section(".text.hot.qemu")))
+#else
+#define QEMU_HOT
+#endif
 
 #ifndef likely
 #if __GNUC__ < 3
