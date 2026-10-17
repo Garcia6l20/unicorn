@@ -1163,15 +1163,9 @@ static void uc_invalidate_tb(struct uc_struct *uc, uint64_t start_addr,
     int exception_index = uc->cpu->exception_index;
 
     if (uc_bus_ram_addr(uc, start_addr, &start)) {
-        uint64_t page;
-
         end = start + len;
         if (start != (tb_page_addr_t)-1 && start <= end) {
             tb_invalidate_phys_range(uc, start, end);
-        }
-        for (page = start_addr & TARGET_PAGE_MASK; page < start_addr + len;
-             page += TARGET_PAGE_SIZE) {
-            tb_flush_jmp_cache(uc->cpu, page);
         }
         return;
     }

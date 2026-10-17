@@ -3101,7 +3101,7 @@ static uint32_t test_arm_v8m_subpage_leg(bool remove)
     return r0;
 }
 
-static void test_arm_v8m_remove_cache_subpage(void)
+static void test_arm_v8m_subpage_keeps_no_translation(void)
 {
     uint32_t removed = test_arm_v8m_subpage_leg(true);
     uint32_t kept = test_arm_v8m_subpage_leg(false);
@@ -4682,8 +4682,8 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
               test_arm_v8m_remove_cache_secure_fault},
              {"test_arm_v8m_remove_cache_unfetchable",
               test_arm_v8m_remove_cache_unfetchable},
-             {"test_arm_v8m_remove_cache_subpage",
-              test_arm_v8m_remove_cache_subpage},
+             {"test_arm_v8m_subpage_keeps_no_translation",
+              test_arm_v8m_subpage_keeps_no_translation},
              {"test_arm_bus_filter_fetch_first",
               test_arm_bus_filter_fetch_first},
              {"test_arm_bus_filter_fast", test_arm_bus_filter_fast},
