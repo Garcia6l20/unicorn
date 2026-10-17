@@ -4842,20 +4842,23 @@ static void test_arm_split_page_window_straddle(void)
     V8M_RUN run;
     uint32_t r3 = 0;
     bool sau;
+    const char *host;
 
     for (sau = false;; sau = true) {
+        host = sau ? "SAU, write then stop"
+                   : "fetch window, flush without a stop, one-shot straddle "
+                     "block";
         test_arm_split_straddle_leg(sau, true, &run, &r3);
         TEST_CHECK(run.intno != -1);
         TEST_CHECK(run.pc == SPLIT_HOLE - 2);
         TEST_CHECK(r3 == SPLIT_COUNT - SPLIT_FLIP);
-        TEST_MSG("%s, verdict changed: intno %d pc 0x%x r3 %u",
-                 sau ? "SAU" : "fetch window", run.intno, run.pc, r3);
+        TEST_MSG("%s, verdict changed: intno %d pc 0x%x r3 %u", host, run.intno,
+                 run.pc, r3);
 
         test_arm_split_straddle_leg(sau, false, &run, &r3);
         TEST_CHECK(run.intno == -1);
         TEST_CHECK(r3 == 0);
-        TEST_MSG("%s, verdict kept: intno %d r3 %u",
-                 sau ? "SAU" : "fetch window", run.intno, r3);
+        TEST_MSG("%s, verdict kept: intno %d r3 %u", host, run.intno, r3);
         if (sau) {
             break;
         }
