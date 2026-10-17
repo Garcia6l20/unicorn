@@ -405,12 +405,16 @@ typedef void (*uc_cb_mmio_write_attrs_t)(uc_engine *uc, uint64_t offset,
  * UC_BUS_FETCH_EACH, says that every byte of the naturally aligned
  * 2^shift-byte window around the address has the fetch verdict of the
  * address, clipped to the page. The page then keeps translated blocks, each
- * bounded by the window of its first instruction and valid until the next
- * TLB flush. Shift 0, or no window, translates each instruction of the page
- * alone at every execution, as on a page an MPU region smaller than a page
- * splits. An instruction that runs past the end of its window is translated
- * alone at every execution. Data accesses keep the verdict of the fill. 0
- * leaves the page on the fast path. */
+ * bounded by the window of its first instruction. A TLB flush retires them
+ * at their next lookup only: blocks of the page chained across windows keep
+ * running until the emulation stops, also into a window the flush made
+ * denied. A host that changes a fetch verdict or a window from a callback
+ * flushes, then ends the run, as UC_CTL_BUS_FILTER says. Shift 0, or no
+ * window, translates each instruction of the page alone at every execution,
+ * as on a page an MPU region smaller than a page splits. An instruction that
+ * runs past the end of its window is translated alone at every execution.
+ * Data accesses keep the verdict of the fill. 0 leaves the page on the fast
+ * path. */
 typedef enum uc_bus_page_verdict {
     UC_BUS_FILTER_DATA = 1,
     UC_BUS_DENY_FETCH = 2,
@@ -864,8 +868,11 @@ typedef enum uc_control_type {
      * even when its page is no longer fetchable. A page that an SAU region
      * smaller than a page splits keeps translated blocks, each bounded by
      * the run of addresses around its first instruction with no region base
-     * or limit inside, and valid until the next TLB flush. A lookup that
-     * misses them attributes the fetch at its own address. An instruction
+     * or limit inside. A TLB flush retires them at their next lookup only:
+     * blocks chained across such runs keep running until the emulation
+     * stops, also into a run an SAU write made non-fetchable. A host that
+     * writes the SAU from a callback ends the run after the write. A lookup
+     * that misses them attributes the fetch at its own address. An instruction
      * that runs past such a bound is translated alone at every execution. A
      * page that an MPU region splits keeps no translation. UC_ARCH_ARM only,
      * UC_ERR_ARG on other architectures and for a read.
@@ -882,11 +889,15 @@ typedef enum uc_control_type {
      * access, chained blocks included. A flush does not unlink chained
      * translation blocks: code already chained inside a page whose fetch
      * verdict became UC_BUS_DENY_FETCH keeps running until the emulation
-     * stops. A host that changes a fetch verdict from a callback flushes,
-     * then ends the run, with uc_emu_stop or, from a memory or MMIO
-     * callback, UC_CTL_UC_EXIT_AFTER_INSN. Removing translated code with
-     * uc_ctl_remove_cache is not needed for a verdict change: blocks of a
-     * denied page are reached only through a fill, which faults.
+     * stops. On a UC_BUS_FETCH_EACH page the flush retires blocks at their
+     * next lookup only, so code chained between windows keeps running into
+     * a window whose verdict became UC_BUS_DENY_FETCH, also when the page
+     * itself never does. A host that changes a fetch verdict or a window
+     * from a callback flushes, then ends the run, with uc_emu_stop or, from
+     * a memory or MMIO callback, UC_CTL_UC_EXIT_AFTER_INSN. Removing
+     * translated code with uc_ctl_remove_cache is not needed for a verdict
+     * change: blocks of a denied page or window are reached only through a
+     * fill, which faults.
      * UC_ARCH_ARM only, UC_ERR_ARG on other architectures and for a read.
      * Write: @args = (uc_cb_bus_page_t, uc_cb_bus_access_t, void *) */
     UC_CTL_BUS_FILTER,
