@@ -417,6 +417,7 @@ struct uc_struct {
     uc_cb_bus_page_t bus_page_cb;
     uc_cb_bus_access_t bus_access_cb;
     void *bus_filter_user;
+    uint64_t bus_refusals;
     bool bus_fill_filter;
     bool bus_fill_fetch_each;
 

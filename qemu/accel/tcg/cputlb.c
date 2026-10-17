@@ -1598,6 +1598,7 @@ static bool bus_filter_allows(CPUArchState *env, CPUIOTLBEntry *iotlbentry,
     if (verdict == UC_BUS_ALLOW) {
         return true;
     }
+    uc->bus_refusals++;
     if (verdict == UC_BUS_FAULT && cc->do_transaction_failed) {
         cc->do_transaction_failed(cpu, paddr, addr, size, access_type, mmu_idx,
                                   iotlbentry->attrs, MEMTX_ERROR, retaddr);
@@ -1654,6 +1655,10 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
     struct uc_struct *uc = env->uc;
     MemoryRegion *mr;
     CPUTLBHookState hook_state;
+    bool filtered;
+    bool filter_judged = false;
+    bool hooks_after = false;
+    uint64_t refusals;
 
     tlb_hook_state_init(env, &hook_state);
 
@@ -1771,8 +1776,27 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
     }
 
     // now it is read on mapped memory
+    filtered = !code_read && (tlb_addr & TLB_WATCHPOINT) &&
+               env_tlb(env)->d[mmu_idx].iotlb[index].bus_filter;
+    if (filtered && (addr & (size - 1)) == 0) {
+        uint64_t value = 0;
+        bool allowed;
+
+        tlb_hook_state_sync(env, retaddr, &hook_state);
+        allowed = bus_filter_allows(env, &env_tlb(env)->d[mmu_idx].iotlb[index],
+                                    addr, paddr, size, access_type, mmu_idx,
+                                    &value, retaddr);
+        tlb_hook_state_restore(env, &hook_state);
+        if (!allowed) {
+            res = value & MAKE_64BIT_MASK(0, size * 8);
+            goto _out;
+        }
+        filter_judged = true;
+    }
+    hooks_after = filtered && !filter_judged && !uc->size_recur_mem;
+
     // patch issue #1041 multiple UC_HOOK_MEM callbacks for unaligned access
-    if (!code_read && !uc->size_recur_mem) {
+    if (!code_read && !uc->size_recur_mem && !hooks_after) {
         // this is date reading
         HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READ) {
             if (hook->to_delete)
@@ -1904,7 +1928,7 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
             /* On watchpoint hit, this will longjmp out.  */
             cpu_check_watchpoint(env_cpu(env), addr, size,
                                  iotlbentry->attrs, BP_MEM_READ, retaddr);
-            if (iotlbentry->bus_filter && !code_read) {
+            if (iotlbentry->bus_filter && !code_read && !filter_judged) {
                 uint64_t value = 0;
 
                 if (!bus_filter_allows(env, iotlbentry, addr, paddr, size,
@@ -1952,9 +1976,23 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
         addr2 = addr1 + size;
         old_size = uc->size_recur_mem;
         uc->size_recur_mem = size;
+        refusals = uc->bus_refusals;
         r1 = full_load(env, addr1, oi, retaddr);
         r2 = full_load(env, addr2, oi, retaddr);
         uc->size_recur_mem = old_size;
+        if (hooks_after && uc->bus_refusals == refusals) {
+            HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READ) {
+                if (hook->to_delete)
+                    continue;
+                if (!HOOK_BOUND_CHECK(hook, paddr))
+                    continue;
+                tlb_hook_state_sync(env, retaddr, &hook_state);
+                JIT_CALLBACK_GUARD(((uc_cb_hookmem_t)hook->callback)(env->uc, UC_MEM_READ, paddr, size, 0, hook->user_data));
+                if (uc->stop_request)
+                    break;
+            }
+            tlb_hook_state_restore(env, &hook_state);
+        }
         shift = (addr & (size - 1)) * 8;
 
         if (memop_big_endian(op)) {

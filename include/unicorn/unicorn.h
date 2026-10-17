@@ -454,13 +454,17 @@ typedef unsigned (*uc_cb_bus_page_t)(uc_engine *uc, uint64_t page,
 /**
  * @brief Access callback of uc_ctl_bus_filter(), called for each data load
  * and store of a page whose verdict has UC_BUS_FILTER_DATA.
- * Called after the UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE and
- * UC_HOOK_MEM_WRITE_PROT hooks of the access and before the RAM access. An
- * unaligned load is split into aligned parts, an unaligned store into
- * bytes, and each part calls the callback. Never called for an instruction
- * fetch. Accesses the CPU makes on its own, such as M-profile exception
- * stacking, do not reach the TLB and are not filtered. The callback must
- * not call the engine.
+ * A load calls it before its UC_HOOK_MEM_READ and UC_HOOK_MEM_READ_PROT
+ * hooks: a load it refuses runs neither, and UC_HOOK_MEM_READ_AFTER sees
+ * the value the load returns. An unaligned load calls it for each aligned
+ * part first and runs its UC_HOOK_MEM_READ hooks after, only when no part
+ * was refused. A store calls it after its UC_HOOK_MEM_WRITE and
+ * UC_HOOK_MEM_WRITE_PROT hooks. Every access calls it before the RAM
+ * access. An unaligned load is split into aligned parts, an unaligned store
+ * into bytes, and each part calls the callback. Never called for an
+ * instruction fetch. Accesses the CPU makes on its own, such as M-profile
+ * exception stacking, do not reach the TLB and are not filtered. The
+ * callback must not call the engine.
  * @param uc The engine.
  * @param address Bus address of the access, or of the aligned part of an
  *        unaligned access: a word load at 0x4002 calls with 0x4000 and

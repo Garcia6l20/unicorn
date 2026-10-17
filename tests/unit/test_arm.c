@@ -3993,9 +3993,74 @@ static void test_arm_bus_filter_mem_hooks(void)
     uc_engine *uc = test_arm_bus_hooked_open(
         &run, &log, &hooks, UC_HOOK_MEM_WRITE | UC_HOOK_MEM_READ);
 
-    TEST_CHECK(hooks.reads == 1);
+    TEST_CHECK(hooks.reads == 0);
     TEST_CHECK(log.page_fills == 1);
     OK(uc_close(uc));
+}
+
+typedef struct _BUS_ORDER {
+    int reads;
+    int afters;
+    int64_t after_value;
+} BUS_ORDER;
+
+static void test_arm_bus_order_hook(uc_engine *uc, uc_mem_type type,
+                                    uint64_t address, int size, int64_t value,
+                                    void *user_data)
+{
+    BUS_ORDER *order = user_data;
+
+    if (type == UC_MEM_READ_AFTER) {
+        order->afters++;
+        order->after_value = value;
+    } else {
+        order->reads++;
+    }
+}
+
+static void test_arm_bus_order_leg(int verdict, uint32_t offset)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    BUS_LOG log;
+    BUS_ORDER order = {0, 0, -1};
+    uc_hook hook;
+    char code[] = "\x11\x68";
+    uint32_t stored = 0;
+    uint32_t expected;
+    bool raz = verdict == UC_BUS_RAZ_WI;
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    test_arm_bus_put(uc, BUS_PAGE, BUS_WORD);
+    test_arm_bus_put(uc, BUS_PAGE + 4, ~BUS_WORD);
+    OK(uc_mem_read(uc, BUS_PAGE + offset, &stored, 4));
+    expected = raz ? 0 : stored;
+    test_arm_bus_log(&log, BUS_PAGE, UC_BUS_FILTER_DATA, verdict);
+    test_arm_bus_install(uc, &log);
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_READ | UC_HOOK_MEM_READ_AFTER,
+                   test_arm_bus_order_hook, &order, BUS_PAGE, BUS_PAGE + 7));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0xffffffff);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, BUS_PAGE + offset);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 2);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R1) == expected);
+    TEST_CHECK(order.reads == (raz ? 0 : 1));
+    TEST_CHECK(order.afters == 1);
+    TEST_CHECK(order.after_value == expected);
+    TEST_CHECK(log.accesses == (offset == 0 ? 1 : 2));
+    TEST_MSG("%s at +%u: r1 0x%x reads %d afters %d after 0x%llx calls %d",
+             raz ? "RAZ" : "allow", offset,
+             test_arm_v8m_get(uc, UC_ARM_REG_R1), order.reads, order.afters,
+             (unsigned long long)order.after_value, log.accesses);
+    OK(uc_close(uc));
+}
+
+static void test_arm_bus_filter_read_hook_order(void)
+{
+    test_arm_bus_order_leg(UC_BUS_RAZ_WI, 0);
+    test_arm_bus_order_leg(UC_BUS_ALLOW, 0);
+    test_arm_bus_order_leg(UC_BUS_RAZ_WI, 2);
+    test_arm_bus_order_leg(UC_BUS_ALLOW, 2);
 }
 
 static void test_arm_bus_filter_hook_refill(void)
@@ -4654,6 +4719,8 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_subpage_boundary_fetch",
               test_arm_subpage_boundary_fetch},
              {"test_arm_bus_filter_fetch_each", test_arm_bus_filter_fetch_each},
+             {"test_arm_bus_filter_read_hook_order",
+              test_arm_bus_filter_read_hook_order},
              {"test_arm_bus_filter_fetch_each_straddle",
               test_arm_bus_filter_fetch_each_straddle},
              {"test_arm_subpage_straddle", test_arm_subpage_straddle},
