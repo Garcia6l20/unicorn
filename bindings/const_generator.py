@@ -207,6 +207,12 @@ def gen(lang):
                     define = True
                     f.pop(0)
                     f.insert(1, '=')
+                    if '(' in f[0]:
+                        idx = lno
+                        while lines[idx].rstrip().endswith('\\'):
+                            idx += 1
+                            skip += 1
+                        continue
                 if f[0].startswith("UC_" + prefix.upper()) or f[0].startswith("UC_CPU"):
                     if len(f) > 1 and f[1] not in ('//', '='):
                         print("WARNING: Unable to convert %s" % f)
