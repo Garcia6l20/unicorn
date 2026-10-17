@@ -1632,6 +1632,17 @@ static bool bus_filter_allows(CPUArchState *env, CPUIOTLBEntry *iotlbentry,
     return false;
 }
 
+static QEMU_NOINLINE bool
+bus_filter_allows_store(CPUArchState *env, CPUIOTLBEntry *iotlbentry,
+                        target_ulong addr, hwaddr paddr, unsigned size,
+                        int mmu_idx, uint64_t val, uintptr_t retaddr)
+{
+    uint64_t value = val;
+
+    return bus_filter_allows(env, iotlbentry, addr, paddr, size,
+                             MMU_DATA_STORE, mmu_idx, &value, retaddr);
+}
+
 static inline uint64_t
 load_memop(const void *haddr, MemOp op)
 {
@@ -2556,14 +2567,10 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
             /* On watchpoint hit, this will longjmp out.  */
             cpu_check_watchpoint(env_cpu(env), addr, size,
                                  iotlbentry->attrs, BP_MEM_WRITE, retaddr);
-            if (iotlbentry->bus_filter) {
-                uint64_t value = val;
-
-                if (!bus_filter_allows(env, iotlbentry, addr, paddr, size,
-                                       MMU_DATA_STORE, mmu_idx, &value,
-                                       retaddr)) {
-                    return;
-                }
+            if (iotlbentry->bus_filter &&
+                !bus_filter_allows_store(env, iotlbentry, addr, paddr, size,
+                                         mmu_idx, val, retaddr)) {
+                return;
             }
         }
 
