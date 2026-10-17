@@ -164,6 +164,8 @@ typedef uc_err (*uc_gen_tb_t)(struct uc_struct *uc, uint64_t pc, uc_tb *out_tb);
 // tb flush
 typedef uc_tcg_flush_tlb uc_tb_flush_t;
 
+typedef uint64_t (*uc_tb_live_t)(struct uc_struct *uc);
+
 typedef uc_err (*uc_set_tlb_t)(struct uc_struct *uc, int mode);
 
 // PAuth sign and strip
@@ -328,6 +330,7 @@ struct uc_struct {
     uc_invalidate_tb_t uc_invalidate_tb;
     uc_gen_tb_t uc_gen_tb;
     uc_tb_flush_t tb_flush;
+    uc_tb_live_t tb_live;
     uc_add_inline_hook_t add_inline_hook;
     uc_del_inline_hook_t del_inline_hook;
     uc_pauth_sign_t pauth_sign;
@@ -411,6 +414,7 @@ struct uc_struct {
     uint64_t exit_after_insn_taken;
     uint32_t mem_alias_count;
     uint64_t slow_path_ram_accesses;
+    uint64_t tb_translations;
     uc_arm_idau_cb arm_idau;
     void *arm_idau_user;
     bool arm_security;

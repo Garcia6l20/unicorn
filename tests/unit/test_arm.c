@@ -4609,6 +4609,35 @@ static void test_arm_v8m_nsacr(void)
     OK(uc_close(uc));
 }
 
+static void test_arm_tb_translations(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    char loop[] = "\x01\x30\x01\x3b\xfc\xd1\x00\xbf";
+    uint64_t translations = 0;
+    uint64_t live = 0;
+
+    uc = test_arm_v8m_open(loop, sizeof(loop) - 1, &run);
+    OK(uc_ctl_tb_translations(uc, &translations, &live));
+    TEST_CHECK(translations == 0);
+    TEST_CHECK(live == 0);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, V8M_LOOP_COUNT);
+    run.intno = -1;
+    OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(loop) - 1, 0, 0));
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) == V8M_LOOP_COUNT);
+    OK(uc_ctl_tb_translations(uc, &translations, &live));
+    TEST_CHECK(translations >= 1 && translations <= 3);
+    TEST_CHECK(live >= 1 && live <= translations);
+    TEST_MSG("translations %" PRIu64 " live %" PRIu64, translations, live);
+    OK(uc_ctl_flush_tb(uc));
+    OK(uc_ctl_tb_translations(uc, &translations, &live));
+    TEST_CHECK(live == 0);
+    uc_assert_err(UC_ERR_ARG,
+                  uc_ctl(uc, UC_CTL_WRITE(UC_CTL_TB_TRANSLATIONS, 2),
+                         &translations, &live));
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
@@ -4760,4 +4789,5 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_subpage_straddle", test_arm_subpage_straddle},
              {"test_arm_v8m_nsacr_fp", test_arm_v8m_nsacr_fp},
              {"test_arm_v8m_nsacr", test_arm_v8m_nsacr},
+             {"test_arm_tb_translations", test_arm_tb_translations},
              {NULL, NULL}};

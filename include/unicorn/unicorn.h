@@ -893,6 +893,12 @@ typedef enum uc_control_type {
      * callback's value. UC_ERR_ARG for a read.
      * Write: @args = () */
     UC_CTL_UC_REFUSE_MMIO,
+    /**
+     * Read the translation counts: the number of blocks translated since
+     * uc_open, temporary blocks included, and the number of blocks a lookup
+     * can return now. Meant for tests and benches. UC_ERR_ARG for a write.
+     * Read: @args = (uint64_t *translations, uint64_t *live) */
+    UC_CTL_TB_TRANSLATIONS,
 } uc_control_type;
 
 /*
@@ -1000,6 +1006,8 @@ See sample_ctl.c for a detailed example.
     uc_ctl(uc, UC_CTL_READ(UC_CTL_UC_SLOW_PATH_COUNT, 1), (ptr))
 #define uc_ctl_slow_path_count_reset(uc)                                       \
     uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_SLOW_PATH_COUNT, 0))
+#define uc_ctl_tb_translations(uc, translations, live)                         \
+    uc_ctl(uc, UC_CTL_READ(UC_CTL_TB_TRANSLATIONS, 2), (translations), (live))
 #define uc_ctl_arm_idau(uc, cb, user)                                          \
     uc_ctl(uc, UC_CTL_WRITE(UC_CTL_ARM_IDAU, 2), (uc_arm_idau_cb)(cb),         \
            (void *)(user))

@@ -1130,6 +1130,19 @@ static void uc_tb_flush(struct uc_struct *uc) {
     tb_exec_lock(uc);
 }
 
+static void uc_tb_count(struct uc_struct *uc, void *p, uint32_t h, void *up)
+{
+    (*(uint64_t *)up)++;
+}
+
+static uint64_t uc_tb_live(struct uc_struct *uc)
+{
+    uint64_t live = 0;
+
+    qht_iter(uc, &uc->tcg_ctx->tb_ctx.htable, uc_tb_count, &live);
+    return live;
+}
+
 static bool uc_cpu_is_m_profile(CPUArchState *env)
 {
 #ifdef TARGET_ARM
@@ -1281,6 +1294,7 @@ void tcg_exec_init(struct uc_struct *uc, uint32_t tb_size)
     uc->uc_invalidate_tb = uc_invalidate_tb;
     uc->uc_gen_tb = uc_gen_tb;
     uc->tb_flush = uc_tb_flush;
+    uc->tb_live = uc_tb_live;
 
     /* Inline hooks optimization */
     uc->add_inline_hook = uc_add_inline_hook;
@@ -1905,6 +1919,8 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
         tlb_reset_dirty_by_vaddr(cpu, pc & TARGET_PAGE_MASK,
                                 (pc & ~TARGET_PAGE_MASK) + tb->size);
     }
+
+    cpu->uc->tb_translations++;
 
     /*
      * No explicit memory barrier is required -- tb_link_page() makes the

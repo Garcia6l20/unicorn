@@ -3403,6 +3403,22 @@ uc_err uc_ctl(uc_engine *uc, uc_control_type control, ...)
         }
         break;
 
+    case UC_CTL_TB_TRANSLATIONS: {
+        uint64_t *translations;
+        uint64_t *live;
+
+        if (rw != UC_CTL_IO_READ) {
+            err = UC_ERR_ARG;
+            break;
+        }
+        UC_INIT(uc);
+        translations = va_arg(args, uint64_t *);
+        live = va_arg(args, uint64_t *);
+        *translations = uc->tb_translations;
+        *live = uc->tb_live(uc);
+        break;
+    }
+
     case UC_CTL_ARM_IDAU:
         if (rw != UC_CTL_IO_WRITE || uc->arch != UC_ARCH_ARM) {
             err = UC_ERR_ARG;
