@@ -1446,6 +1446,7 @@ static void do_tb_flush(CPUState *cpu, run_on_cpu_data tb_flush_count)
     /* XXX: flush processor icache at this point if cache flush is
        expensive */
     cpu->uc->tcg_ctx->tb_ctx.tb_flush_count = cpu->uc->tcg_ctx->tb_ctx.tb_flush_count + 1;
+    cpu->uc->tb_buffer_flushes++;
 
 done:
     mmap_unlock();

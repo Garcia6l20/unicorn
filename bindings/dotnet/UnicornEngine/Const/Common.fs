@@ -179,6 +179,7 @@ module Common =
     let UC_CTL_BUS_FILTER = 26
     let UC_CTL_UC_REFUSE_MMIO = 27
     let UC_CTL_TB_TRANSLATIONS = 28
+    let UC_CTL_TB_FLUSHES = 29
     let UC_CTL_CONTEXT_CPU = 1
     let UC_CTL_CONTEXT_MEMORY = 2
 

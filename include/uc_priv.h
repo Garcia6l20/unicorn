@@ -415,6 +415,7 @@ struct uc_struct {
     uint32_t mem_alias_count;
     uint64_t slow_path_ram_accesses;
     uint64_t tb_translations;
+    uint64_t tb_buffer_flushes;
     uc_arm_idau_cb arm_idau;
     void *arm_idau_user;
     bool arm_security;

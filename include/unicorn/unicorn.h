@@ -931,6 +931,12 @@ typedef enum uc_control_type {
      * UC_ERR_ARG for a write.
      * Read: @args = (uint64_t *translations, uint64_t *live) */
     UC_CTL_TB_TRANSLATIONS,
+    /**
+     * Read the number of translation buffer flushes since uc_open: each one
+     * drops every translated block, for a full code buffer or for
+     * uc_ctl_flush_tb. Meant for tests and benches. UC_ERR_ARG for a write.
+     * Read: @args = (uint64_t *flushes) */
+    UC_CTL_TB_FLUSHES,
 } uc_control_type;
 
 /*
@@ -1040,6 +1046,8 @@ See sample_ctl.c for a detailed example.
     uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_SLOW_PATH_COUNT, 0))
 #define uc_ctl_tb_translations(uc, translations, live)                         \
     uc_ctl(uc, UC_CTL_READ(UC_CTL_TB_TRANSLATIONS, 2), (translations), (live))
+#define uc_ctl_tb_flushes(uc, flushes)                                         \
+    uc_ctl(uc, UC_CTL_READ(UC_CTL_TB_FLUSHES, 1), (flushes))
 #define uc_ctl_arm_idau(uc, cb, user)                                          \
     uc_ctl(uc, UC_CTL_WRITE(UC_CTL_ARM_IDAU, 2), (uc_arm_idau_cb)(cb),         \
            (void *)(user))

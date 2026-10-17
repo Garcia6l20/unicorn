@@ -5052,6 +5052,8 @@ static void test_arm_tb_translations(void)
     char loop[] = "\x01\x30\x01\x3b\xfc\xd1\x00\xbf";
     uint64_t translations = 0;
     uint64_t live = 0;
+    uint64_t flushes = 0;
+    uint64_t after = 0;
 
     uc = test_arm_v8m_open(loop, sizeof(loop) - 1, &run);
     OK(uc_ctl_tb_translations(uc, &translations, &live));
@@ -5066,12 +5068,18 @@ static void test_arm_tb_translations(void)
     TEST_CHECK(translations >= 1 && translations <= 3);
     TEST_CHECK(live >= 1 && live <= translations);
     TEST_MSG("translations %" PRIu64 " live %" PRIu64, translations, live);
+    OK(uc_ctl_tb_flushes(uc, &flushes));
     OK(uc_ctl_flush_tb(uc));
     OK(uc_ctl_tb_translations(uc, &translations, &live));
     TEST_CHECK(live == 0);
+    OK(uc_ctl_tb_flushes(uc, &after));
+    TEST_CHECK(after == flushes + 1);
+    TEST_MSG("flushes %" PRIu64 " then %" PRIu64, flushes, after);
     uc_assert_err(UC_ERR_ARG,
                   uc_ctl(uc, UC_CTL_WRITE(UC_CTL_TB_TRANSLATIONS, 2),
                          &translations, &live));
+    uc_assert_err(UC_ERR_ARG,
+                  uc_ctl(uc, UC_CTL_WRITE(UC_CTL_TB_FLUSHES, 1), &flushes));
     OK(uc_close(uc));
 }
 
