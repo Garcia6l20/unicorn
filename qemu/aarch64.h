@@ -795,6 +795,7 @@
 #define tlb_set_page_with_attrs tlb_set_page_with_attrs_aarch64
 #define tlb_set_page tlb_set_page_aarch64
 #define get_page_addr_code_hostp get_page_addr_code_hostp_aarch64
+#define get_page_addr_code_window get_page_addr_code_window_aarch64
 #define get_page_addr_code get_page_addr_code_aarch64
 #define probe_access probe_access_aarch64
 #define tlb_vaddr_to_host tlb_vaddr_to_host_aarch64

@@ -399,17 +399,29 @@ typedef void (*uc_cb_mmio_write_attrs_t)(uc_engine *uc, uint64_t offset,
  * UC_BUS_FILTER_DATA sends every data load and store of the page through
  * the uc_cb_bus_access_t. UC_BUS_DENY_FETCH makes an instruction fetch from
  * the page a prefetch abort, an external abort, EXCP_PREFETCH_ABORT.
- * UC_BUS_FETCH_EACH keeps no fetch verdict for the page: every instruction
- * fetch fills the TLB again and calls the uc_cb_bus_page_t with its own
- * address, and each instruction of the page is translated alone at every
- * execution, as on a page an SAU region smaller than a page splits. Data
- * accesses keep the verdict of the fill. 0 leaves the page on the fast
- * path. */
+ * UC_BUS_FETCH_EACH keeps no fetch verdict for the page: every block lookup
+ * that misses the cached blocks fills the TLB again and calls the
+ * uc_cb_bus_page_t with its own address. UC_BUS_FETCH_WINDOW(shift), with
+ * UC_BUS_FETCH_EACH, says that every byte of the naturally aligned
+ * 2^shift-byte window around the address has the fetch verdict of the
+ * address, clipped to the page. The page then keeps translated blocks, each
+ * bounded by the window of its first instruction and valid until the next
+ * TLB flush. Shift 0, or no window, translates each instruction of the page
+ * alone at every execution, as on a page an MPU region smaller than a page
+ * splits. An instruction that runs past the end of its window is translated
+ * alone at every execution. Data accesses keep the verdict of the fill. 0
+ * leaves the page on the fast path. */
 typedef enum uc_bus_page_verdict {
     UC_BUS_FILTER_DATA = 1,
     UC_BUS_DENY_FETCH = 2,
     UC_BUS_FETCH_EACH = 4,
+    UC_BUS_FETCH_WINDOW_SHIFT = 8,
+    UC_BUS_FETCH_WINDOW_MASK = 0x1f00,
 } uc_bus_page_verdict;
+
+#define UC_BUS_FETCH_WINDOW(shift)                                             \
+    (((unsigned)(shift) << UC_BUS_FETCH_WINDOW_SHIFT) &                        \
+     UC_BUS_FETCH_WINDOW_MASK)
 
 /**
  * @brief Access verdicts of a uc_cb_bus_access_t.
@@ -445,8 +457,8 @@ typedef enum uc_bus_access_verdict {
  * @param access_type UC_MEM_READ, UC_MEM_WRITE or UC_MEM_FETCH, the access
  *        that caused the fill.
  * @param user_data User data passed to uc_ctl_bus_filter().
- * @return An OR of UC_BUS_FILTER_DATA, UC_BUS_DENY_FETCH and
- *         UC_BUS_FETCH_EACH, or 0. */
+ * @return An OR of UC_BUS_FILTER_DATA, UC_BUS_DENY_FETCH, UC_BUS_FETCH_EACH
+ *         and UC_BUS_FETCH_WINDOW(shift), or 0. */
 typedef unsigned (*uc_cb_bus_page_t)(uc_engine *uc, uint64_t page,
                                      uint64_t address, uc_mem_attrs attrs,
                                      uc_mem_type access_type, void *user_data);
@@ -850,10 +862,13 @@ typedef enum uc_control_type {
      * does not unlink chained translation blocks: code already chained
      * inside a page keeps running until the emulation stops, uc_emu_stop,
      * even when its page is no longer fetchable. A page that an SAU region
-     * smaller than a page splits keeps no translation: each of its
-     * instructions is translated alone at every execution, so every fetch is
-     * attributed at its own address. UC_ARCH_ARM only, UC_ERR_ARG on other
-     * architectures and for a read.
+     * smaller than a page splits keeps translated blocks, each bounded by
+     * the run of addresses around its first instruction with no region base
+     * or limit inside, and valid until the next TLB flush. A lookup that
+     * misses them attributes the fetch at its own address. An instruction
+     * that runs past such a bound is translated alone at every execution. A
+     * page that an MPU region splits keeps no translation. UC_ARCH_ARM only,
+     * UC_ERR_ARG on other architectures and for a read.
      * Write: @args = (int)
      */
     UC_CTL_ARM_SECURITY,

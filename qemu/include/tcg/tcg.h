@@ -629,6 +629,7 @@ struct TCGContext {
 
     TCGRegSet reserved_regs;
     uint32_t tb_cflags; /* cflags of the current TB */
+    uint64_t tb_fetch_end;
     intptr_t current_frame_offset;
     intptr_t frame_start;
     intptr_t frame_end;

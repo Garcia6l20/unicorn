@@ -1113,7 +1113,8 @@ static bool tb_cmp(struct uc_struct *uc, const void *ap, const void *bp)
         (tb_cflags(a) & CF_HASH_MASK) == (tb_cflags(b) & CF_HASH_MASK) &&
         a->trace_vcpu_dstate == b->trace_vcpu_dstate &&
         a->page_addr[0] == b->page_addr[0] &&
-        a->page_addr[1] == b->page_addr[1];
+        a->page_addr[1] == b->page_addr[1] &&
+        a->fetch_gen == b->fetch_gen;
 }
 
 static void tb_htable_init(struct uc_struct *uc)
@@ -1756,6 +1757,40 @@ tb_link_page(struct uc_struct *uc, TranslationBlock *tb, tb_page_addr_t phys_pc,
     return tb;
 }
 
+struct tb_old_desc {
+    const TranslationBlock *tb;
+    tb_page_addr_t page;
+};
+
+static bool tb_old_cmp(struct uc_struct *uc, const void *p, const void *d)
+{
+    const TranslationBlock *old = p;
+    const struct tb_old_desc *desc = d;
+    const TranslationBlock *tb = desc->tb;
+
+    return old->pc == tb->pc && old->cs_base == tb->cs_base &&
+           old->flags == tb->flags &&
+           old->trace_vcpu_dstate == tb->trace_vcpu_dstate &&
+           (tb_cflags(old) & CF_HASH_MASK) == (tb_cflags(tb) & CF_HASH_MASK) &&
+           old->page_addr[0] == desc->page && old->fetch_gen != tb->fetch_gen;
+}
+
+static void tb_drop_old_generations(TCGContext *tcg_ctx, TranslationBlock *tb,
+                                    tb_page_addr_t phys_pc)
+{
+    struct uc_struct *uc = tcg_ctx->uc;
+    struct tb_old_desc desc = {tb, phys_pc & TARGET_PAGE_MASK};
+    uint32_t h =
+        tb_hash_func(phys_pc, tb->pc, tb->flags, tb_cflags(tb) & CF_HASH_MASK,
+                     tb->trace_vcpu_dstate);
+    TranslationBlock *old;
+
+    while ((old = qht_lookup_custom(uc, &tcg_ctx->tb_ctx.htable, &desc, h,
+                                    tb_old_cmp)) != NULL) {
+        tb_phys_invalidate(tcg_ctx, old, -1);
+    }
+}
+
 /* Called with mmap_lock held for user mode emulation.  */
 TranslationBlock *tb_gen_code(CPUState *cpu,
                               target_ulong pc, target_ulong cs_base,
@@ -1771,12 +1806,13 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     target_ulong virt_page2;
     tcg_insn_unit *gen_code_buf;
     int gen_code_size, search_size, max_insns;
+    uint64_t fetch_end;
 
     assert_memory_lock();
 #ifdef HAVE_PTHREAD_JIT_PROTECT
     tb_exec_unlock(cpu->uc);
 #endif
-    phys_pc = get_page_addr_code(env, pc);
+    phys_pc = get_page_addr_code_window(env, pc, &fetch_end);
 
     if (phys_pc == -1) {
         /* Generate a temporary TB; do not cache */
@@ -1820,7 +1856,9 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     tb->cflags = cflags;
     tb->orig_tb = NULL;
     tb->trace_vcpu_dstate = *cpu->trace_dstate;
+    tb->fetch_gen = cpu->uc->fetch_gen;
     tcg_ctx->tb_cflags = cflags;
+    tcg_ctx->tb_fetch_end = fetch_end;
  tb_overflow:
 
     tcg_func_start(tcg_ctx);
@@ -1911,6 +1949,15 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
             tb->cflags = (tb->cflags & ~CF_COUNT_MASK) | CF_NOCACHE |
                          MIN(tb->icount, CF_COUNT_MASK);
             phys_pc = -1;
+        }
+    }
+    if (fetch_end != 0 && phys_pc != -1) {
+        if ((uint64_t)pc + tb->size > fetch_end) {
+            tb->cflags = (tb->cflags & ~CF_COUNT_MASK) | CF_NOCACHE |
+                         MIN(tb->icount, CF_COUNT_MASK);
+            phys_pc = -1;
+        } else {
+            tb_drop_old_generations(tcg_ctx, tb, phys_pc);
         }
     }
 

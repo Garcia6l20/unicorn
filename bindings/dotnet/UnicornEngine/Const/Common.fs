@@ -101,6 +101,8 @@ module Common =
     let UC_BUS_FILTER_DATA = 1
     let UC_BUS_DENY_FETCH = 2
     let UC_BUS_FETCH_EACH = 4
+    let UC_BUS_FETCH_WINDOW_SHIFT = 8
+    let UC_BUS_FETCH_WINDOW_MASK = 7936
 
     let UC_BUS_ALLOW = 0
     let UC_BUS_RAZ_WI = 1

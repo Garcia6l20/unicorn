@@ -795,6 +795,7 @@ tlb_set_dirty \
 tlb_set_page_with_attrs \
 tlb_set_page \
 get_page_addr_code_hostp \
+get_page_addr_code_window \
 get_page_addr_code \
 probe_access \
 tlb_vaddr_to_host \

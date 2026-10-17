@@ -795,6 +795,7 @@
 #define tlb_set_page_with_attrs tlb_set_page_with_attrs_sparc64
 #define tlb_set_page tlb_set_page_sparc64
 #define get_page_addr_code_hostp get_page_addr_code_hostp_sparc64
+#define get_page_addr_code_window get_page_addr_code_window_sparc64
 #define get_page_addr_code get_page_addr_code_sparc64
 #define probe_access probe_access_sparc64
 #define tlb_vaddr_to_host tlb_vaddr_to_host_sparc64

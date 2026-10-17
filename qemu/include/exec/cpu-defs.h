@@ -142,6 +142,7 @@ typedef struct CPUIOTLBEntry {
     hwaddr addr;
     MemTxAttrs attrs;
     bool bus_filter;
+    uint32_t fetch_end;
 } CPUIOTLBEntry;
 
 /*

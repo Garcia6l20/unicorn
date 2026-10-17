@@ -10506,6 +10506,31 @@ static bool v8m_is_sau_exempt(CPUARMState *env, uint32_t address,
         (address >= 0xe00ff000 && address <= 0xe00fffff);
 }
 
+static uint32_t v8m_sau_window_end(CPUARMState *env, uint32_t address)
+{
+    struct uc_struct *uc = env->uc;
+    ARMCPU *cpu = env_archcpu(env);
+    uint64_t page = address & TARGET_PAGE_MASK;
+    uint64_t end = page + TARGET_PAGE_SIZE;
+    int r;
+
+    for (r = 0; r < cpu->sau_sregion; r++) {
+        uint64_t base = env->sau.rbar[r] & ~0x1f;
+        uint64_t next = (uint64_t)(env->sau.rlar[r] | 0x1f) + 1;
+
+        if (!(env->sau.rlar[r] & 1) || next <= base) {
+            continue;
+        }
+        if (base > address && base < end) {
+            end = base;
+        }
+        if (next > address && next < end) {
+            end = next;
+        }
+    }
+    return end - page;
+}
+
 void v8m_security_lookup(CPUARMState *env, uint32_t address,
                                 MMUAccessType access_type, ARMMMUIdx mmu_idx,
                                 V8M_SAttributes *sattrs)
@@ -10604,6 +10629,10 @@ void v8m_security_lookup(CPUARMState *env, uint32_t address,
             }
         }
         break;
+    }
+
+    if (sattrs->subpage) {
+        sattrs->subpage_end = v8m_sau_window_end(env, address);
     }
 
     /*
@@ -10823,6 +10852,9 @@ static bool get_phys_addr_pmsav8(CPUARMState *env, uint32_t address,
     ret = pmsav8_mpu_lookup(env, address, access_type, mmu_idx, phys_ptr,
                             txattrs, prot, &mpu_is_subpage, fi, NULL);
     *page_size = sattrs.subpage || mpu_is_subpage ? 1 : TARGET_PAGE_SIZE;
+    if (access_type == MMU_INST_FETCH && sattrs.subpage && !mpu_is_subpage) {
+        uc->arm_fetch_end = sattrs.subpage_end;
+    }
     return ret;
 }
 

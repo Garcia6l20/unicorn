@@ -364,6 +364,7 @@ struct TranslationBlock {
     uintptr_t jmp_list_next[2];
     uintptr_t jmp_dest[2];
     uint32_t hash;  // unicorn needs this hash to remove this TB from QHT cache
+    uint64_t fetch_gen;
 };
 
 // extern bool parallel_cpus;
@@ -445,6 +446,21 @@ static inline void mmap_unlock(void) {}
  * Note: this function can trigger an exception.
  */
 tb_page_addr_t get_page_addr_code(CPUArchState *env, target_ulong addr);
+
+/**
+ * get_page_addr_code_window() - full-system version
+ * @env: CPUArchState
+ * @addr: guest virtual address of guest code
+ * @fetch_end: set to the end of the fetch window of @addr, or to 0
+ *
+ * As get_page_addr_code(), except for a RAM page whose code TLB entry is
+ * smaller than a page and whose fill gave a fetch window: every byte from
+ * @addr to *@fetch_end, exclusive, has the fetch verdict of @addr, and the
+ * ram_addr_t of @addr is returned. *@fetch_end is 0 for a page that keeps
+ * its code TLB entry, and for -1.
+ */
+tb_page_addr_t get_page_addr_code_window(CPUArchState *env, target_ulong addr,
+                                         uint64_t *fetch_end);
 
 /**
  * get_page_addr_code_hostp() - full-system version

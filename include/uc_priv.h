@@ -424,6 +424,9 @@ struct uc_struct {
     uint64_t bus_refusals;
     bool bus_fill_filter;
     bool bus_fill_fetch_each;
+    uint32_t bus_fill_fetch_end;
+    uint32_t arm_fetch_end;
+    uint64_t fetch_gen;
 
     int use_exits;
     uint64_t exits[UC_MAX_NESTED_LEVEL]; // When multiple exits is not enabled.

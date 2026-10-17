@@ -795,6 +795,7 @@
 #define tlb_set_page_with_attrs tlb_set_page_with_attrs_s390x
 #define tlb_set_page tlb_set_page_s390x
 #define get_page_addr_code_hostp get_page_addr_code_hostp_s390x
+#define get_page_addr_code_window get_page_addr_code_window_s390x
 #define get_page_addr_code get_page_addr_code_s390x
 #define probe_access probe_access_s390x
 #define tlb_vaddr_to_host tlb_vaddr_to_host_s390x

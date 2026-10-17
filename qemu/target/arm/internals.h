@@ -1199,6 +1199,7 @@ typedef struct V8M_SAttributes {
     bool srvalid;
     uint8_t iregion;
     bool irvalid;
+    uint32_t subpage_end;
 } V8M_SAttributes;
 
 void v8m_security_lookup(CPUARMState *env, uint32_t address,

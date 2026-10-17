@@ -795,6 +795,7 @@
 #define tlb_set_page_with_attrs tlb_set_page_with_attrs_arm
 #define tlb_set_page tlb_set_page_arm
 #define get_page_addr_code_hostp get_page_addr_code_hostp_arm
+#define get_page_addr_code_window get_page_addr_code_window_arm
 #define get_page_addr_code get_page_addr_code_arm
 #define probe_access probe_access_arm
 #define tlb_vaddr_to_host tlb_vaddr_to_host_arm

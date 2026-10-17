@@ -300,6 +300,7 @@ static void tlb_flush_by_mmuidx_async_work(CPUState *cpu, run_on_cpu_data data)
         tlb_flush_one_mmuidx_locked(env, mmu_idx, now);
     }
 
+    cpu->uc->fetch_gen++;
     cpu_tb_jmp_cache_clear(cpu);
 
     if (to_clean == ALL_MMUIDX_BITS) {
@@ -434,6 +435,7 @@ static void tlb_flush_page_by_mmuidx_async_0(CPUState *cpu,
         }
     }
 
+    cpu->uc->fetch_gen++;
     tb_flush_jmp_cache(cpu, addr);
 }
 
@@ -967,6 +969,7 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
     desc->iotlb[index].addr = iotlb - vaddr_page;
     desc->iotlb[index].attrs = attrs;
     desc->iotlb[index].bus_filter = bus_filter;
+    desc->iotlb[index].fetch_end = is_ram ? cpu->uc->bus_fill_fetch_end : 0;
 
     /* Now calculate the new entry */
     tn.addend = addend - vaddr_page;
@@ -1190,8 +1193,9 @@ static bool victim_tlb_hit(CPUArchState *env, size_t mmu_idx, size_t index,
  * NOTE: This function will trigger an exception if the page is
  * not executable.
  */
-tb_page_addr_t get_page_addr_code_hostp(CPUArchState *env, target_ulong addr,
-                                        void **hostp)
+static tb_page_addr_t get_page_addr_code_split(CPUArchState *env,
+                                               target_ulong addr, void **hostp,
+                                               uint64_t *fetch_end)
 {
     struct uc_struct *uc = env->uc;
     uintptr_t mmu_idx = cpu_mmu_index(env, true);
@@ -1199,6 +1203,9 @@ tb_page_addr_t get_page_addr_code_hostp(CPUArchState *env, target_ulong addr,
     CPUTLBEntry *entry = tlb_entry(env, mmu_idx, addr);
     void *p;
 
+    if (fetch_end) {
+        *fetch_end = 0;
+    }
     if (unlikely(!tlb_hit(uc, entry->addr_code, addr))) {
         if (!VICTIM_TLB_HIT(addr_code, addr)) {
             tlb_fill(env_cpu(env), addr, 0, MMU_INST_FETCH, mmu_idx, 0);
@@ -1206,11 +1213,17 @@ tb_page_addr_t get_page_addr_code_hostp(CPUArchState *env, target_ulong addr,
             entry = tlb_entry(env, mmu_idx, addr);
 
             if (unlikely(entry->addr_code & TLB_INVALID_MASK)) {
+                uint32_t end = env_tlb(env)->d[mmu_idx].iotlb[index].fetch_end;
+
                 /*
                  * The MMU protection covers a smaller range than a target
                  * page, so we must redo the MMU check for every insn.
                  */
-                return -1;
+                if (!fetch_end || end == 0 || (entry->addr_code & TLB_MMIO)) {
+                    return -1;
+                }
+                *fetch_end = (uint64_t)(addr & TARGET_PAGE_MASK) + end;
+                goto ram;
             }
         }
         assert(tlb_hit(uc, entry->addr_code, addr));
@@ -1224,11 +1237,24 @@ tb_page_addr_t get_page_addr_code_hostp(CPUArchState *env, target_ulong addr,
         return -1;
     }
 
+ram:
     p = (void *)((uintptr_t)addr + entry->addend);
     if (hostp) {
         *hostp = p;
     }
     return qemu_ram_addr_from_host_nofail(env->uc, p);
+}
+
+tb_page_addr_t get_page_addr_code_hostp(CPUArchState *env, target_ulong addr,
+                                        void **hostp)
+{
+    return get_page_addr_code_split(env, addr, hostp, NULL);
+}
+
+tb_page_addr_t get_page_addr_code_window(CPUArchState *env, target_ulong addr,
+                                         uint64_t *fetch_end)
+{
+    return get_page_addr_code_split(env, addr, NULL, fetch_end);
 }
 
 tb_page_addr_t get_page_addr_code(CPUArchState *env, target_ulong addr)

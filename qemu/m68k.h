@@ -795,6 +795,7 @@
 #define tlb_set_page_with_attrs tlb_set_page_with_attrs_m68k
 #define tlb_set_page tlb_set_page_m68k
 #define get_page_addr_code_hostp get_page_addr_code_hostp_m68k
+#define get_page_addr_code_window get_page_addr_code_window_m68k
 #define get_page_addr_code get_page_addr_code_m68k
 #define probe_access probe_access_m68k
 #define tlb_vaddr_to_host tlb_vaddr_to_host_m68k

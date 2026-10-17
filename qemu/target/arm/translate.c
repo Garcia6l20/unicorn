@@ -11344,6 +11344,7 @@ static void arm_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     dc->is_ldex = false;
 
     dc->page_start = dc->base.pc_first & TARGET_PAGE_MASK;
+    dc->fetch_end = tcg_ctx->tb_fetch_end;
 
     /* If architectural single step active, limit to 1.  */
     if (is_singlestepping(dc)) {
@@ -11358,6 +11359,9 @@ static void arm_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
 #else
         int bound = -(dc->base.pc_first | TARGET_PAGE_MASK) / 4;
 #endif
+        if (dc->fetch_end != 0) {
+            bound = MAX(1, (int)((dc->fetch_end - dc->base.pc_first) / 4));
+        }
         dc->base.max_insns = MIN(dc->base.max_insns, bound);
     }
 
@@ -11708,6 +11712,12 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     if (dc->base.is_jmp == DISAS_NEXT
         && (dc->base.pc_next - dc->page_start >= TARGET_PAGE_SIZE
             || (dc->base.pc_next - dc->page_start >= TARGET_PAGE_SIZE - 3
+                && insn_crosses_page(env, dc)))) {
+        dc->base.is_jmp = DISAS_TOO_MANY;
+    }
+    if (dc->base.is_jmp == DISAS_NEXT && dc->fetch_end != 0
+        && (dc->base.pc_next >= dc->fetch_end
+            || (dc->base.pc_next >= dc->fetch_end - 3
                 && insn_crosses_page(env, dc)))) {
         dc->base.is_jmp = DISAS_TOO_MANY;
     }

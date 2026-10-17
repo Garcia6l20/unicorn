@@ -164,6 +164,27 @@ static unsigned arm_bus_page_verdict(CPUState *cs, hwaddr phys_addr,
                            type, uc->bus_filter_user);
 }
 
+static uint32_t arm_fetch_window_end(struct uc_struct *uc, vaddr address,
+                                     target_ulong page_size, unsigned verdict)
+{
+    uint32_t offset = address & ~TARGET_PAGE_MASK;
+    uint32_t end =
+        page_size < TARGET_PAGE_SIZE ? uc->arm_fetch_end : TARGET_PAGE_SIZE;
+
+    if (verdict & UC_BUS_FETCH_EACH) {
+        unsigned shift =
+            (verdict & UC_BUS_FETCH_WINDOW_MASK) >> UC_BUS_FETCH_WINDOW_SHIFT;
+
+        if (shift == 0) {
+            return 0;
+        }
+        if (shift < TARGET_PAGE_BITS) {
+            end = MIN(end, (offset | ((1u << shift) - 1)) + 1);
+        }
+    }
+    return end;
+}
+
 bool arm_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
                       MMUAccessType access_type, int mmu_idx,
                       bool probe, uintptr_t retaddr)
@@ -183,6 +204,7 @@ bool arm_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
      * return false.  Otherwise populate fsr with ARM DFSR/IFSR fault
      * register format, and signal the fault.
      */
+    uc->arm_fetch_end = 0;
     ret = get_phys_addr(&cpu->env, address, access_type,
                         core_to_arm_mmu_idx(&cpu->env, mmu_idx),
                         &phys_addr, &attrs, &prot, &page_size, &fi, NULL);
@@ -213,10 +235,15 @@ bool arm_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
         }
         uc->bus_fill_filter = (verdict & UC_BUS_FILTER_DATA) != 0;
         uc->bus_fill_fetch_each = (verdict & UC_BUS_FETCH_EACH) != 0;
+        if (access_type == MMU_INST_FETCH) {
+            uc->bus_fill_fetch_end =
+                arm_fetch_window_end(uc, address, page_size, verdict);
+        }
         tlb_set_page_with_attrs(cs, address, phys_addr, attrs,
                                 prot, mmu_idx, page_size);
         uc->bus_fill_filter = false;
         uc->bus_fill_fetch_each = false;
+        uc->bus_fill_fetch_end = 0;
         return true;
     } else if (probe) {
         return false;

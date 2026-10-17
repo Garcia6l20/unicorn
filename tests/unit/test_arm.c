@@ -3102,13 +3102,13 @@ static uint32_t test_arm_v8m_subpage_leg(bool remove)
     return r0;
 }
 
-static void test_arm_v8m_subpage_keeps_no_translation(void)
+static void test_arm_split_page_remove_cache(void)
 {
     uint32_t removed = test_arm_v8m_subpage_leg(true);
     uint32_t kept = test_arm_v8m_subpage_leg(false);
 
     TEST_CHECK(removed == 2);
-    TEST_CHECK(kept == 2);
+    TEST_CHECK(kept == 1);
     TEST_MSG("removed r0 %u, without removal r0 %u", removed, kept);
 }
 
@@ -4499,6 +4499,9 @@ static void test_arm_subpage_boundary_leg(bool split, V8M_RUN *run,
     uc_engine *uc;
     char code[SUBPAGE_CODE_SIZE];
     size_t i;
+    int pass;
+    V8M_RUN first = {0};
+    uint32_t first_r0 = 0;
 
     for (i = 0; i < sizeof(code); i += 2) {
         code[i] = 0x01;
@@ -4511,11 +4514,21 @@ static void test_arm_subpage_boundary_leg(bool split, V8M_RUN *run,
                                 SUBPAGE_BOUNDARY | V8M_SAU_ENABLE);
     }
     test_arm_v8m_reg(uc, UC_ARM_REG_SAU_CTRL, V8M_SAU_ENABLE);
-    test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0);
-    run->intno = -1;
-    run->pc = 0;
-    OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(code), 0, 0));
-    *r0 = test_arm_v8m_get(uc, UC_ARM_REG_R0);
+    for (pass = 0; pass < 2; pass++) {
+        test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0);
+        run->intno = -1;
+        run->pc = 0;
+        OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(code), 0, 0));
+        *r0 = test_arm_v8m_get(uc, UC_ARM_REG_R0);
+        if (pass == 0) {
+            first = *run;
+            first_r0 = *r0;
+        }
+    }
+    TEST_CHECK(run->intno == first.intno && run->pc == first.pc);
+    TEST_CHECK(*r0 == first_r0);
+    TEST_MSG("second pass: intno %d pc 0x%x r0 %u, first: %d 0x%x %u",
+             run->intno, run->pc, *r0, first.intno, first.pc, first_r0);
     OK(uc_close(uc));
 }
 
@@ -4606,6 +4619,413 @@ static void test_arm_v8m_nsacr(void)
                     UC_CPU_ARM_CORTEX_M7);
     uc_assert_err(UC_ERR_ARG, uc_reg_read(uc, UC_ARM_REG_NSACR, &ignored));
     uc_assert_err(UC_ERR_ARG, uc_reg_write(uc, UC_ARM_REG_NSACR, &ignored));
+    OK(uc_close(uc));
+}
+
+#define SPLIT_HOLE (code_start + 0x200)
+#define SPLIT_EDGE (code_start + 0x40)
+#define SPLIT_LOOPS 1000
+#define SPLIT_COUNT 2000
+#define SPLIT_FLIP 1000
+#define SPLIT_DATA 0x3000
+#define SPLIT_FAR (code_start + 0x300)
+
+typedef struct _SPLIT_BUS {
+    uint64_t denied;
+    uint64_t denied_size;
+    unsigned shift;
+    unsigned extra;
+    bool filter;
+    bool flip;
+    int stores;
+} SPLIT_BUS;
+
+static unsigned test_arm_split_bus_page(uc_engine *uc, uint64_t page,
+                                        uint64_t address, uc_mem_attrs attrs,
+                                        uc_mem_type access_type,
+                                        void *user_data)
+{
+    SPLIT_BUS *bus = user_data;
+    unsigned verdict;
+
+    if (page != code_start || !bus->filter) {
+        return 0;
+    }
+    verdict = UC_BUS_FETCH_EACH | UC_BUS_FETCH_WINDOW(bus->shift) | bus->extra;
+    if (address >= bus->denied && address < bus->denied + bus->denied_size) {
+        verdict |= UC_BUS_DENY_FETCH;
+    }
+    return verdict;
+}
+
+static uc_engine *test_arm_split_open(const char *code, size_t size,
+                                      V8M_RUN *run, bool sau, SPLIT_BUS *bus)
+{
+    uc_engine *uc = test_arm_v8m_open(code, size, run);
+
+    if (sau) {
+        OK(uc_ctl_arm_security(uc, 1));
+        test_arm_v8m_sau_region(uc, 0, bus->denied,
+                                ((bus->denied + bus->denied_size - 1) & ~0x1f) |
+                                    V8M_SAU_ENABLE);
+        test_arm_v8m_reg(uc, UC_ARM_REG_SAU_CTRL, V8M_SAU_ENABLE);
+    } else {
+        OK(uc_ctl_bus_filter(uc, test_arm_split_bus_page,
+                             test_arm_bus_straddle_access, bus));
+    }
+    return uc;
+}
+
+static uint64_t test_arm_translations(uc_engine *uc)
+{
+    uint64_t translations = 0;
+    uint64_t live = 0;
+
+    OK(uc_ctl_tb_translations(uc, &translations, &live));
+    return translations;
+}
+
+static uint64_t test_arm_live_blocks(uc_engine *uc)
+{
+    uint64_t translations = 0;
+    uint64_t live = 0;
+
+    OK(uc_ctl_tb_translations(uc, &translations, &live));
+    return live;
+}
+
+static uint64_t test_arm_split_cached_leg(bool sau, unsigned shift,
+                                          uint32_t *r0)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    SPLIT_BUS bus = {SPLIT_HOLE, 0x20, shift, 0, true};
+    char loop[] = "\x01\x30\x01\x3b\xfc\xd1\x00\xbf";
+    uint64_t before;
+    uint64_t count;
+
+    uc = test_arm_split_open(loop, sizeof(loop) - 1, &run, sau, &bus);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, SPLIT_LOOPS);
+    before = test_arm_translations(uc);
+    run.intno = -1;
+    OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(loop) - 1, 0, 0));
+    TEST_CHECK(run.intno == -1);
+    count = test_arm_translations(uc) - before;
+    *r0 = test_arm_v8m_get(uc, UC_ARM_REG_R0);
+    OK(uc_close(uc));
+    return count;
+}
+
+static void test_arm_split_page_cached(void)
+{
+    uint32_t r0 = 0;
+    uint64_t count;
+
+    count = test_arm_split_cached_leg(true, 0, &r0);
+    TEST_CHECK(r0 == SPLIT_LOOPS);
+    TEST_CHECK(count <= 3);
+    TEST_MSG("SAU split: r0 %u translations %" PRIu64, r0, count);
+
+    count = test_arm_split_cached_leg(false, 9, &r0);
+    TEST_CHECK(r0 == SPLIT_LOOPS);
+    TEST_CHECK(count <= 3);
+    TEST_MSG("fetch window 9: r0 %u translations %" PRIu64, r0, count);
+
+    count = test_arm_split_cached_leg(false, 0, &r0);
+    TEST_CHECK(r0 == SPLIT_LOOPS);
+    TEST_CHECK(count >= 3 * SPLIT_LOOPS);
+    TEST_MSG("fetch window 0: r0 %u translations %" PRIu64, r0, count);
+}
+
+static void test_arm_split_edge_leg(const char *name, bool sau, unsigned shift)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    SPLIT_BUS bus = {SPLIT_EDGE, 0x40, shift, 0, true};
+    char code[0x80];
+    uint64_t before;
+    size_t i;
+    int pass;
+
+    for (i = 0; i < sizeof(code); i += 2) {
+        code[i] = 0x01;
+        code[i + 1] = 0x30;
+    }
+    uc = test_arm_split_open(code, sizeof(code), &run, sau, &bus);
+    for (pass = 0; pass < 2; pass++) {
+        test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0);
+        before = test_arm_translations(uc);
+        run.intno = -1;
+        run.pc = 0;
+        OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(code), 0, 0));
+        TEST_CHECK(run.intno != -1);
+        TEST_CHECK(run.pc == SPLIT_EDGE);
+        TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) ==
+                   (SPLIT_EDGE - code_start) / 2);
+        TEST_CHECK(pass == 0 || (!sau && shift == 0) ||
+                   test_arm_translations(uc) == before);
+        TEST_MSG("%s, pass %d: intno %d pc 0x%x r0 %u translations %" PRIu64,
+                 name, pass, run.intno, run.pc,
+                 test_arm_v8m_get(uc, UC_ARM_REG_R0),
+                 test_arm_translations(uc) - before);
+    }
+    OK(uc_close(uc));
+}
+
+static void test_arm_split_page_window_edge(void)
+{
+    test_arm_split_edge_leg("SAU split", true, 0);
+    test_arm_split_edge_leg("fetch window 6", false, 6);
+    test_arm_split_edge_leg("fetch window 0", false, 0);
+}
+
+static void test_arm_split_straddle_store(uc_engine *uc, uc_mem_type type,
+                                          uint64_t address, int size,
+                                          int64_t value, void *user_data)
+{
+    SPLIT_BUS *bus = user_data;
+
+    if (++bus->stores != SPLIT_FLIP || !bus->flip) {
+        return;
+    }
+    if (bus->filter) {
+        bus->denied = SPLIT_HOLE;
+        bus->denied_size = 0x200;
+        OK(uc_ctl_flush_tlb(uc));
+    } else {
+        test_arm_v8m_sau_region(uc, 1, SPLIT_HOLE, SPLIT_HOLE | V8M_SAU_ENABLE);
+        OK(uc_emu_stop(uc));
+    }
+}
+
+static void test_arm_split_straddle_leg(bool sau, bool flip, V8M_RUN *run,
+                                        uint32_t *r3)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    SPLIT_BUS bus = {
+        sau ? code_start + 0x300 : 0, sau ? 0x20 : 0, 9, 0, !sau, flip};
+    char loop[] = "\x10\x60\x01\x30\x01\x3b\x04\xd0\x00\xbf"
+                  "\x40\xf2\x00\x01\xf7\xe7\x00\xbf\x00\xbf";
+
+    uc = test_arm_split_open("\x00\xbf", 2, run, sau, &bus);
+    OK(uc_mem_write(uc, SPLIT_HOLE - 0xc, loop, sizeof(loop) - 1));
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_WRITE, test_arm_split_straddle_store,
+                   &bus, SPLIT_DATA, SPLIT_DATA + 3));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, SPLIT_DATA);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, SPLIT_COUNT);
+    run->intno = -1;
+    run->pc = 0;
+    OK(uc_emu_start(uc, (SPLIT_HOLE - 0xc) | 1, SPLIT_HOLE + 6, 0,
+                    9 * SPLIT_COUNT));
+    if (sau && flip && run->intno == -1) {
+        OK(uc_emu_start(uc, test_arm_v8m_get(uc, UC_ARM_REG_PC) | 1,
+                        SPLIT_HOLE + 6, 0, 9 * SPLIT_COUNT));
+    }
+    *r3 = test_arm_v8m_get(uc, UC_ARM_REG_R3);
+    OK(uc_close(uc));
+}
+
+static void test_arm_split_page_window_straddle(void)
+{
+    V8M_RUN run;
+    uint32_t r3 = 0;
+    bool sau;
+
+    for (sau = false;; sau = true) {
+        test_arm_split_straddle_leg(sau, true, &run, &r3);
+        TEST_CHECK(run.intno != -1);
+        TEST_CHECK(run.pc == SPLIT_HOLE - 2);
+        TEST_CHECK(r3 == SPLIT_COUNT - SPLIT_FLIP);
+        TEST_MSG("%s, verdict changed: intno %d pc 0x%x r3 %u",
+                 sau ? "SAU" : "fetch window", run.intno, run.pc, r3);
+
+        test_arm_split_straddle_leg(sau, false, &run, &r3);
+        TEST_CHECK(run.intno == -1);
+        TEST_CHECK(r3 == 0);
+        TEST_MSG("%s, verdict kept: intno %d r3 %u",
+                 sau ? "SAU" : "fetch window", run.intno, r3);
+        if (sau) {
+            break;
+        }
+    }
+}
+
+static void test_arm_split_uniform_store(uc_engine *uc, uc_mem_type type,
+                                         uint64_t address, int size,
+                                         int64_t value, void *user_data)
+{
+    SPLIT_BUS *bus = user_data;
+
+    if (++bus->stores != SPLIT_FLIP) {
+        return;
+    }
+    bus->filter = true;
+    OK(uc_ctl_flush_tlb(uc));
+    OK(uc_emu_stop(uc));
+}
+
+static void test_arm_split_page_uniform_to_split(void)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    V8M_RUN run;
+    SPLIT_BUS bus = {SPLIT_HOLE, 0x200, 9, 0, false};
+    char loop[] = "\x10\x60\x01\x30\x01\x31\x01\x31\x01\x31\x01\x31\x01\x31"
+                  "\x01\x31\x01\x31\x01\x3b\xf4\xd1\x00\xbf";
+    uint32_t pc;
+
+    uc = test_arm_split_open("\x00\xbf", 2, &run, false, &bus);
+    OK(uc_mem_write(uc, SPLIT_HOLE - 0x10, loop, sizeof(loop) - 1));
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_WRITE, test_arm_split_uniform_store,
+                   &bus, SPLIT_DATA, SPLIT_DATA + 3));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, SPLIT_DATA);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, SPLIT_COUNT);
+    run.intno = -1;
+    OK(uc_emu_start(uc, (SPLIT_HOLE - 0x10) | 1, SPLIT_HOLE + 8, 0, 0));
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(bus.stores == SPLIT_FLIP);
+    pc = test_arm_v8m_get(uc, UC_ARM_REG_PC);
+    run.intno = -1;
+    run.pc = 0;
+    OK(uc_emu_start(uc, pc | 1, SPLIT_HOLE + 8, 0, 0));
+    TEST_CHECK(run.intno == V8M_EXCP_PREFETCH_ABORT);
+    TEST_CHECK(run.pc == SPLIT_HOLE);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) ==
+               SPLIT_COUNT - SPLIT_FLIP + 1);
+    TEST_MSG("stop at 0x%x, resumed: intno %d pc 0x%x r3 %u", pc, run.intno,
+             run.pc, test_arm_v8m_get(uc, UC_ARM_REG_R3));
+    OK(uc_close(uc));
+}
+
+static void test_arm_split_hop_store(uc_engine *uc, uc_mem_type type,
+                                     uint64_t address, int size, int64_t value,
+                                     void *user_data)
+{
+    SPLIT_BUS *bus = user_data;
+
+    if (++bus->stores != SPLIT_FLIP || !bus->flip) {
+        return;
+    }
+    test_arm_v8m_sau_region(uc, 1, SPLIT_FAR, SPLIT_FAR | V8M_SAU_ENABLE);
+    OK(uc_emu_stop(uc));
+}
+
+static void test_arm_split_hop_leg(bool flip, V8M_RUN *run, uint32_t *r3,
+                                   uint64_t *translations)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    SPLIT_BUS bus = {SPLIT_HOLE, 0x20, 0, 0, false, flip};
+    char near[] = "\x10\x60\x01\x3b\x02\xd0\x7b\xe1\x00\xbf\x00\xbf\x00\xbf";
+    char far[] = "\x7e\xe6";
+    uint32_t pc;
+    uint64_t before;
+
+    uc = test_arm_split_open(near, sizeof(near) - 1, run, true, &bus);
+    OK(uc_mem_write(uc, SPLIT_FAR, far, sizeof(far) - 1));
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_WRITE, test_arm_split_hop_store, &bus,
+                   SPLIT_DATA, SPLIT_DATA + 3));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, SPLIT_DATA);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, SPLIT_COUNT);
+    before = test_arm_translations(uc);
+    run->intno = -1;
+    run->pc = 0;
+    OK(uc_emu_start(uc, code_start | 1, code_start + 0xc, 0, 0));
+    pc = test_arm_v8m_get(uc, UC_ARM_REG_PC);
+    if (flip && run->intno == -1) {
+        OK(uc_emu_start(uc, pc | 1, code_start + 0xc, 0, 0));
+    }
+    *r3 = test_arm_v8m_get(uc, UC_ARM_REG_R3);
+    *translations = test_arm_translations(uc) - before;
+    OK(uc_close(uc));
+}
+
+static void test_arm_split_page_hop(void)
+{
+    V8M_RUN run;
+    uint32_t r3 = 0;
+    uint64_t translations = 0;
+
+    test_arm_split_hop_leg(true, &run, &r3, &translations);
+    TEST_CHECK(run.intno != -1);
+    TEST_CHECK(run.pc == SPLIT_FAR);
+    TEST_CHECK(r3 == SPLIT_COUNT - SPLIT_FLIP);
+    TEST_MSG("far window Non-secure: intno %d pc 0x%x r3 %u", run.intno, run.pc,
+             r3);
+
+    test_arm_split_hop_leg(false, &run, &r3, &translations);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(r3 == 0);
+    TEST_CHECK(translations <= 4);
+    TEST_MSG("far window kept: intno %d r3 %u translations %" PRIu64, run.intno,
+             r3, translations);
+}
+
+static uint32_t test_arm_split_smc_leg(bool sau, unsigned extra)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    SPLIT_BUS bus = {SPLIT_HOLE, 0x20, 9, extra, true};
+    char loop[] = "\x11\x80\x01\x30\x01\x3b\xfb\xd1\x00\xbf";
+    uint32_t r0;
+
+    uc = test_arm_split_open(loop, sizeof(loop) - 1, &run, sau, &bus);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0x3002);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, code_start + 2);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R3, 10);
+    run.intno = -1;
+    OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(loop) - 1, 0, 0));
+    TEST_CHECK(run.intno == -1);
+    r0 = test_arm_v8m_get(uc, UC_ARM_REG_R0);
+    OK(uc_close(uc));
+    return r0;
+}
+
+static void test_arm_split_page_smc(void)
+{
+    uint32_t sau = test_arm_split_smc_leg(true, 0);
+    uint32_t window = test_arm_split_smc_leg(false, 0);
+    uint32_t filtered = test_arm_split_smc_leg(false, UC_BUS_FILTER_DATA);
+
+    TEST_CHECK(sau == 19);
+    TEST_CHECK(window == 19);
+    TEST_CHECK(filtered == 19);
+    TEST_MSG("r0 SAU %u, fetch window %u, fetch window and data filter %u", sau,
+             window, filtered);
+}
+
+static void test_arm_split_page_bound(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    SPLIT_BUS bus = {SPLIT_HOLE, 0x200, 9, 0, true};
+    char loop[] = "\x01\x30\x01\x3b\xfc\xd1\x00\xbf";
+    uint64_t before;
+    uint64_t first = 0;
+    int cycle;
+
+    uc = test_arm_split_open(loop, sizeof(loop) - 1, &run, false, &bus);
+    before = test_arm_translations(uc);
+    for (cycle = 0; cycle < SPLIT_LOOPS; cycle++) {
+        bus.denied_size = cycle % 2 == 0 ? 0x200 : 0x100;
+        OK(uc_ctl_flush_tlb(uc));
+        test_arm_v8m_reg(uc, UC_ARM_REG_R3, 2);
+        run.intno = -1;
+        OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(loop) - 1, 0,
+                        0));
+        TEST_CHECK(run.intno == -1);
+        if (cycle == 0) {
+            first = test_arm_live_blocks(uc);
+        }
+    }
+    TEST_CHECK(test_arm_translations(uc) - before >= SPLIT_LOOPS);
+    TEST_CHECK(first >= 1);
+    TEST_CHECK(test_arm_live_blocks(uc) <= 2);
+    TEST_MSG("translations %" PRIu64 " live after one cycle %" PRIu64
+             ", after %d %" PRIu64,
+             test_arm_translations(uc) - before, first, SPLIT_LOOPS,
+             test_arm_live_blocks(uc));
     OK(uc_close(uc));
 }
 
@@ -4745,8 +5165,8 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
               test_arm_v8m_remove_cache_secure_fault},
              {"test_arm_v8m_remove_cache_unfetchable",
               test_arm_v8m_remove_cache_unfetchable},
-             {"test_arm_v8m_subpage_keeps_no_translation",
-              test_arm_v8m_subpage_keeps_no_translation},
+             {"test_arm_split_page_remove_cache",
+              test_arm_split_page_remove_cache},
              {"test_arm_bus_filter_fetch_first",
               test_arm_bus_filter_fetch_first},
              {"test_arm_bus_filter_fast", test_arm_bus_filter_fast},
@@ -4790,4 +5210,14 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_v8m_nsacr_fp", test_arm_v8m_nsacr_fp},
              {"test_arm_v8m_nsacr", test_arm_v8m_nsacr},
              {"test_arm_tb_translations", test_arm_tb_translations},
+             {"test_arm_split_page_cached", test_arm_split_page_cached},
+             {"test_arm_split_page_window_edge",
+              test_arm_split_page_window_edge},
+             {"test_arm_split_page_window_straddle",
+              test_arm_split_page_window_straddle},
+             {"test_arm_split_page_uniform_to_split",
+              test_arm_split_page_uniform_to_split},
+             {"test_arm_split_page_hop", test_arm_split_page_hop},
+             {"test_arm_split_page_smc", test_arm_split_page_smc},
+             {"test_arm_split_page_bound", test_arm_split_page_bound},
              {NULL, NULL}};

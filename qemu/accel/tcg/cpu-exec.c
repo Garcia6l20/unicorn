@@ -145,6 +145,7 @@ struct tb_desc {
     uint32_t flags;
     uint32_t cf_mask;
     uint32_t trace_vcpu_dstate;
+    bool split;
 };
 
 static bool tb_lookup_cmp(struct uc_struct *uc, const void *p, const void *d)
@@ -157,7 +158,8 @@ static bool tb_lookup_cmp(struct uc_struct *uc, const void *p, const void *d)
         tb->cs_base == desc->cs_base &&
         tb->flags == desc->flags &&
         tb->trace_vcpu_dstate == desc->trace_vcpu_dstate &&
-        (tb_cflags(tb) & (CF_HASH_MASK | CF_INVALID)) == desc->cf_mask) {
+        (tb_cflags(tb) & (CF_HASH_MASK | CF_INVALID)) == desc->cf_mask &&
+        (!desc->split || tb->fetch_gen == uc->fetch_gen)) {
         /* check next page if needed */
         if (tb->page_addr[1] == -1) {
             return true;
@@ -182,6 +184,7 @@ TranslationBlock *tb_htable_lookup(CPUState *cpu, target_ulong pc,
     struct uc_struct *uc = cpu->uc;
     tb_page_addr_t phys_pc;
     struct tb_desc desc;
+    uint64_t fetch_end;
     uint32_t h;
 
     desc.env = (CPUArchState *)cpu->env_ptr;
@@ -190,10 +193,11 @@ TranslationBlock *tb_htable_lookup(CPUState *cpu, target_ulong pc,
     desc.cf_mask = cf_mask;
     desc.trace_vcpu_dstate = *cpu->trace_dstate;
     desc.pc = pc;
-    phys_pc = get_page_addr_code(desc.env, pc);
+    phys_pc = get_page_addr_code_window(desc.env, pc, &fetch_end);
     if (phys_pc == -1) {
         return NULL;
     }
+    desc.split = fetch_end != 0;
     desc.phys_page1 = phys_pc & TARGET_PAGE_MASK;
     h = tb_hash_func(phys_pc, pc, flags, cf_mask, *cpu->trace_dstate);
     return qht_lookup_custom(uc, &cpu->uc->tcg_ctx->tb_ctx.htable, &desc, h, tb_lookup_cmp);
