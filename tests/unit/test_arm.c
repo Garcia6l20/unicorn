@@ -4708,7 +4708,8 @@ static uint64_t test_arm_split_cached_leg(bool sau, unsigned shift,
     test_arm_v8m_reg(uc, UC_ARM_REG_R3, SPLIT_LOOPS);
     before = test_arm_translations(uc);
     run.intno = -1;
-    OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(loop) - 1, 0, 0));
+    OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(loop) - 1, 0,
+                    4 * SPLIT_LOOPS));
     TEST_CHECK(run.intno == -1);
     count = test_arm_translations(uc) - before;
     *r0 = test_arm_v8m_get(uc, UC_ARM_REG_R0);
@@ -4757,7 +4758,8 @@ static void test_arm_split_edge_leg(const char *name, bool sau, unsigned shift)
         before = test_arm_translations(uc);
         run.intno = -1;
         run.pc = 0;
-        OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(code), 0, 0));
+        OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(code), 0,
+                        sizeof(code)));
         TEST_CHECK(run.intno != -1);
         TEST_CHECK(run.pc == SPLIT_EDGE);
         TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R0) ==
@@ -4882,13 +4884,14 @@ static void test_arm_split_page_uniform_to_split(void)
     test_arm_v8m_reg(uc, UC_ARM_REG_R2, SPLIT_DATA);
     test_arm_v8m_reg(uc, UC_ARM_REG_R3, SPLIT_COUNT);
     run.intno = -1;
-    OK(uc_emu_start(uc, (SPLIT_HOLE - 0x10) | 1, SPLIT_HOLE + 8, 0, 0));
+    OK(uc_emu_start(uc, (SPLIT_HOLE - 0x10) | 1, SPLIT_HOLE + 8, 0,
+                    13 * SPLIT_COUNT));
     TEST_CHECK(run.intno == -1);
     TEST_CHECK(bus.stores == SPLIT_FLIP);
     pc = test_arm_v8m_get(uc, UC_ARM_REG_PC);
     run.intno = -1;
     run.pc = 0;
-    OK(uc_emu_start(uc, pc | 1, SPLIT_HOLE + 8, 0, 0));
+    OK(uc_emu_start(uc, pc | 1, SPLIT_HOLE + 8, 0, 13 * SPLIT_COUNT));
     TEST_CHECK(run.intno == V8M_EXCP_PREFETCH_ABORT);
     TEST_CHECK(run.pc == SPLIT_HOLE);
     TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R3) ==
@@ -4931,10 +4934,10 @@ static void test_arm_split_hop_leg(bool flip, V8M_RUN *run, uint32_t *r3,
     before = test_arm_translations(uc);
     run->intno = -1;
     run->pc = 0;
-    OK(uc_emu_start(uc, code_start | 1, code_start + 0xc, 0, 0));
+    OK(uc_emu_start(uc, code_start | 1, code_start + 0xc, 0, 5 * SPLIT_COUNT));
     pc = test_arm_v8m_get(uc, UC_ARM_REG_PC);
     if (flip && run->intno == -1) {
-        OK(uc_emu_start(uc, pc | 1, code_start + 0xc, 0, 0));
+        OK(uc_emu_start(uc, pc | 1, code_start + 0xc, 0, 5 * SPLIT_COUNT));
     }
     *r3 = test_arm_v8m_get(uc, UC_ARM_REG_R3);
     *translations = test_arm_translations(uc) - before;
@@ -4975,7 +4978,8 @@ static uint32_t test_arm_split_smc_leg(bool sau, unsigned extra)
     test_arm_v8m_reg(uc, UC_ARM_REG_R2, code_start + 2);
     test_arm_v8m_reg(uc, UC_ARM_REG_R3, 10);
     run.intno = -1;
-    OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(loop) - 1, 0, 0));
+    OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(loop) - 1, 0,
+                    V8M_STEP_BOUND * 4));
     TEST_CHECK(run.intno == -1);
     r0 = test_arm_v8m_get(uc, UC_ARM_REG_R0);
     OK(uc_close(uc));
@@ -5013,7 +5017,7 @@ static void test_arm_split_page_bound(void)
         test_arm_v8m_reg(uc, UC_ARM_REG_R3, 2);
         run.intno = -1;
         OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(loop) - 1, 0,
-                        0));
+                        V8M_STEP_BOUND));
         TEST_CHECK(run.intno == -1);
         if (cycle == 0) {
             first = test_arm_live_blocks(uc);
