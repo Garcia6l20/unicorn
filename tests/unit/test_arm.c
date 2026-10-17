@@ -4077,6 +4077,43 @@ static void test_arm_bus_filter_hook_refill(void)
     OK(uc_close(uc));
 }
 
+static void test_arm_read_hook_flush_cb(uc_engine *uc, uc_mem_type type,
+                                        uint64_t address, int size,
+                                        int64_t value, void *user_data)
+{
+    int *reads = user_data;
+
+    (*reads)++;
+    OK(uc_ctl_flush_tlb(uc));
+}
+
+static void test_arm_read_hook_flush(void)
+{
+    char code[] = "\x11\x68";
+    uc_engine *uc;
+    uc_hook hook;
+    uint32_t data = 0x8000;
+    uint32_t word = LEINT32(0x5a5aa5a5);
+    uint32_t r1 = 0;
+    int reads = 0;
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB, code, sizeof(code) - 1,
+                    UC_CPU_ARM_CORTEX_M33);
+    OK(uc_mem_map(uc, data, 0x1000, UC_PROT_ALL));
+    OK(uc_mem_write(uc, data, &word, sizeof(word)));
+    OK(uc_reg_write(uc, UC_ARM_REG_R2, &data));
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_READ, test_arm_read_hook_flush_cb,
+                   &reads, data, data + 3));
+
+    OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(code) - 1, 0, 1));
+
+    OK(uc_reg_read(uc, UC_ARM_REG_R1, &r1));
+    TEST_CHECK(reads == 1);
+    TEST_CHECK(r1 == 0x5a5aa5a5);
+    TEST_MSG("reads %d r1 0x%x", reads, r1);
+    OK(uc_close(uc));
+}
+
 static bool test_arm_bus_prot_drop(uc_engine *uc, uc_mem_type type,
                                    uint64_t address, int size, int64_t value,
                                    void *user_data)
@@ -5218,6 +5255,7 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_bus_filter_mem_hooks", test_arm_bus_filter_mem_hooks},
              {"test_arm_bus_filter_hook_refill",
               test_arm_bus_filter_hook_refill},
+             {"test_arm_read_hook_flush", test_arm_read_hook_flush},
              {"test_arm_bus_filter_prot_drop", test_arm_bus_filter_prot_drop},
              {"test_arm_bus_filter_alias", test_arm_bus_filter_alias},
              {"test_arm_bus_filter_ctl", test_arm_bus_filter_ctl},

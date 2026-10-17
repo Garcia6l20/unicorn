@@ -1681,6 +1681,7 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
     struct uc_struct *uc = env->uc;
     MemoryRegion *mr;
     CPUTLBHookState hook_state;
+    bool hooked = false;
     bool filtered;
     bool filter_judged = false;
     bool hooks_after = false;
@@ -1830,6 +1831,7 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
             if (!HOOK_BOUND_CHECK(hook, paddr))
                 continue;
             tlb_hook_state_sync(env, retaddr, &hook_state);
+            hooked = true;
             JIT_CALLBACK_GUARD(((uc_cb_hookmem_t)hook->callback)(env->uc, UC_MEM_READ, paddr, size, 0, hook->user_data));
             // the last callback may already asked to stop emulation
             if (uc->stop_request)
@@ -1842,9 +1844,11 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
                     A better approach is not always invalidating tlb but this
                     might cause more chaos regarding re-entry (nested uc_emu_start).
         */
-        index = tlb_index(env, mmu_idx, addr);
-        entry = tlb_entry(env, mmu_idx, addr);
-        if (tlb_entry_is_empty(entry)) {
+        if (hooked) {
+            index = tlb_index(env, mmu_idx, addr);
+            entry = tlb_entry(env, mmu_idx, addr);
+        }
+        if (hooked && tlb_entry_is_empty(entry)) {
             tlb_fill(env_cpu(env), addr, size,
                         access_type, mmu_idx, retaddr);
             index = tlb_index(env, mmu_idx, addr);
@@ -2360,6 +2364,7 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
     bool handled;
     MemoryRegion *mr;
     CPUTLBHookState hook_state;
+    bool hooked = false;
 
     tlb_hook_state_init(env, &hook_state);
 
@@ -2396,6 +2401,7 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
             if (!HOOK_BOUND_CHECK(hook, paddr))
                 continue;
             tlb_hook_state_sync(env, retaddr, &hook_state);
+            hooked = true;
             JIT_CALLBACK_GUARD(((uc_cb_hookmem_t)hook->callback)(uc, UC_MEM_WRITE, paddr, size, val, hook->user_data));
             // the last callback may already asked to stop emulation
             if (uc->stop_request)
@@ -2403,9 +2409,11 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
         }
         tlb_hook_state_restore(env, &hook_state);
 
-        index = tlb_index(env, mmu_idx, addr);
-        entry = tlb_entry(env, mmu_idx, addr);
-        if (tlb_entry_is_empty(entry)) {
+        if (hooked) {
+            index = tlb_index(env, mmu_idx, addr);
+            entry = tlb_entry(env, mmu_idx, addr);
+        }
+        if (hooked && tlb_entry_is_empty(entry)) {
             tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE,
                      mmu_idx, retaddr);
             index = tlb_index(env, mmu_idx, addr);
