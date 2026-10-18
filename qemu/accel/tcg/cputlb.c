@@ -1059,10 +1059,9 @@ QEMU_HOT static void tlb_fill(CPUState *cpu, target_ulong addr, int size,
 #endif
 }
 
-static QEMU_NOINLINE uint64_t
-io_readx(CPUArchState *env, CPUIOTLBEntry *iotlbentry, int mmu_idx,
-         target_ulong addr, uintptr_t retaddr, MMUAccessType access_type,
-         MemOp op)
+static uint64_t io_readx(CPUArchState *env, CPUIOTLBEntry *iotlbentry,
+                         int mmu_idx, target_ulong addr, uintptr_t retaddr,
+                         MMUAccessType access_type, MemOp op)
 {
     CPUState *cpu = env_cpu(env);
     struct uc_struct *uc = cpu->uc;
@@ -1687,7 +1686,13 @@ load_memop(const void *haddr, MemOp op)
     }
 }
 
-QEMU_HOT static inline uint64_t
+#ifdef UC_LOAD_HELPER_NO_STACK_PROTECTOR
+#define LOAD_HELPER_FRAME __attribute__((no_stack_protector))
+#else
+#define LOAD_HELPER_FRAME
+#endif
+
+QEMU_HOT LOAD_HELPER_FRAME static inline uint64_t
 load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
             uintptr_t retaddr, MemOp op, bool code_read,
             FullLoadHelper *full_load)
