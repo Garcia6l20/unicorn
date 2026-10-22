@@ -1365,6 +1365,166 @@ static void test_mem_slow_path_deleted_mid_run(void)
     OK(uc_close(uc));
 }
 
+static const char store_routines[] = "\x08\x60\x01\x3a\xfc\xd1\x00\xbf"
+                                     "\x08\x60\x00\xbf"
+                                     "\x08\x80\x00\xbf"
+                                     "\x88\x47\x00\xbf";
+
+static const char return_one[] = "\x01\x20\x70\x47";
+
+static void map_store_routines(uc_engine *uc)
+{
+    OK(uc_mem_map(uc, 0x1000, 0x1000, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, store_routines, sizeof(store_routines) - 1));
+}
+
+static uc_engine *open_store_engine(void)
+{
+    uc_engine *uc;
+
+    OK(uc_open(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS, &uc));
+    map_store_routines(uc);
+    OK(uc_mem_map(uc, 0x20000000, 0x1000, UC_PROT_ALL));
+    return uc;
+}
+
+static void guest_store(uc_engine *uc, uint64_t address, uint32_t value)
+{
+    uint32_t r0 = value, r1 = (uint32_t)address;
+
+    OK(uc_reg_write(uc, UC_ARM_REG_R0, &r0));
+    OK(uc_reg_write(uc, UC_ARM_REG_R1, &r1));
+    OK(uc_emu_start(uc, 0x1008 | 1, 0x100a, 0, 0));
+}
+
+static void guest_store_half(uc_engine *uc, uint64_t address, uint32_t value)
+{
+    uint32_t r0 = value, r1 = (uint32_t)address;
+
+    OK(uc_reg_write(uc, UC_ARM_REG_R0, &r0));
+    OK(uc_reg_write(uc, UC_ARM_REG_R1, &r1));
+    OK(uc_emu_start(uc, 0x100c | 1, 0x100e, 0, 0));
+}
+
+static uint64_t slow_path_stores_of_loop(uc_engine *uc, uint64_t address,
+                                         uint32_t iterations)
+{
+    uint32_t r0 = 0x55, r1 = (uint32_t)address, r2 = iterations;
+    uint64_t count = 0;
+
+    OK(uc_reg_write(uc, UC_ARM_REG_R0, &r0));
+    OK(uc_reg_write(uc, UC_ARM_REG_R1, &r1));
+    OK(uc_reg_write(uc, UC_ARM_REG_R2, &r2));
+    OK(uc_ctl_slow_path_count_reset(uc));
+    OK(uc_emu_start(uc, 0x1000 | 1, 0x1006, 0, 0));
+    OK(uc_ctl_slow_path_count(uc, &count));
+    return count;
+}
+
+static uint32_t call_function(uc_engine *uc, uint64_t address)
+{
+    uint32_t r0 = 0, r1 = (uint32_t)address | 1;
+
+    OK(uc_reg_write(uc, UC_ARM_REG_R0, &r0));
+    OK(uc_reg_write(uc, UC_ARM_REG_R1, &r1));
+    OK(uc_emu_start(uc, 0x1010 | 1, 0x1012, 0, 0));
+    OK(uc_reg_read(uc, UC_ARM_REG_R0, &r0));
+    return r0;
+}
+
+static bool refuse_bad_access(uc_engine *uc, uc_mem_type type,
+                              uint64_t address, int size, int64_t value,
+                              void *user_data)
+{
+    return false;
+}
+
+static void test_mem_store_fast_path_on_executable_ram(void)
+{
+    uc_engine *uc = open_store_engine();
+    uc_hook bad_access;
+
+    OK(uc_hook_add(uc, &bad_access, UC_HOOK_MEM_UNMAPPED | UC_HOOK_MEM_PROT,
+                   refuse_bad_access, NULL, 1, 0));
+    TEST_CHECK(slow_path_stores_of_loop(uc, 0x20000200, 5) == 1);
+    TEST_CHECK(slow_path_stores_of_loop(uc, 0x20000200, 5) == 0);
+    TEST_CHECK(slow_path_stores_of_loop(uc, 0x20000204, 5) == 0);
+
+    OK(uc_close(uc));
+}
+
+static void test_mem_store_patches_code_of_its_own_window(void)
+{
+    uc_engine *uc = open_store_engine();
+
+    OK(uc_mem_write(uc, 0x20000100, return_one, sizeof(return_one) - 1));
+    TEST_CHECK(call_function(uc, 0x20000100) == 1);
+    guest_store(uc, 0x20000200, 0x55);
+    guest_store_half(uc, 0x20000100, 0x2002);
+    TEST_CHECK(call_function(uc, 0x20000100) == 2);
+    TEST_CHECK(slow_path_stores_of_loop(uc, 0x20000200, 5) == 5);
+
+    OK(uc_close(uc));
+}
+
+static void test_mem_alias_cleaned_window_rearmed_by_new_code(void)
+{
+    uc_engine *uc = open_alias_engine(UC_PROT_ALL, UC_PROT_ALL);
+
+    map_store_routines(uc);
+    OK(uc_mem_write(uc, 0x20000100, return_one, sizeof(return_one) - 1));
+    guest_store(uc, 0x0a000200, 0x55);
+    TEST_CHECK(slow_path_stores_of_loop(uc, 0x0a000200, 5) == 0);
+    TEST_CHECK(call_function(uc, 0x20000100) == 1);
+    guest_store_half(uc, 0x0a000100, 0x2002);
+    TEST_CHECK(call_function(uc, 0x20000100) == 2);
+
+    OK(uc_close(uc));
+}
+
+static void test_mem_write_hook_added_after_clean(void)
+{
+    uc_engine *uc = open_store_engine();
+    uc_hook write_hook;
+    page_hook_state state = {0};
+
+    TEST_CHECK(slow_path_stores_of_loop(uc, 0x20000200, 5) == 1);
+    TEST_CHECK(slow_path_stores_of_loop(uc, 0x20000200, 5) == 0);
+    OK(uc_hook_add(uc, &write_hook, UC_HOOK_MEM_WRITE, page_hook_write_cb,
+                   &state, 0x20000000, 0x20000fff));
+    TEST_CHECK(slow_path_stores_of_loop(uc, 0x20000200, 5) == 5);
+    TEST_CHECK(state.writes == 5);
+    OK(uc_hook_del(uc, write_hook));
+    slow_path_stores_of_loop(uc, 0x20000200, 5);
+    TEST_CHECK(slow_path_stores_of_loop(uc, 0x20000200, 5) == 0);
+    TEST_CHECK(state.writes == 5);
+
+    OK(uc_close(uc));
+}
+
+static void test_mem_snapshot_after_clean_copies_on_write(void)
+{
+    uc_engine *uc = open_store_engine();
+    uc_context *before;
+    uint32_t value = 0;
+
+    OK(uc_ctl_context_mode(uc, UC_CTL_CONTEXT_MEMORY));
+    OK(uc_context_alloc(uc, &before));
+    guest_store(uc, 0x20000200, 1);
+    TEST_CHECK(slow_path_stores_of_loop(uc, 0x20000204, 5) == 0);
+    OK(uc_context_save(uc, before));
+    guest_store(uc, 0x20000200, 2);
+    OK(uc_mem_read(uc, 0x20000200, &value, sizeof(value)));
+    TEST_CHECK(value == 2);
+    OK(uc_context_restore(uc, before));
+    OK(uc_mem_read(uc, 0x20000200, &value, sizeof(value)));
+    TEST_CHECK(value == 1);
+    TEST_MSG("value %u", value);
+
+    OK(uc_context_free(before));
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_map_correct", test_map_correct},
              {"test_map_wrapping", test_map_wrapping},
              {"test_mem_protect", test_mem_protect},
@@ -1422,4 +1582,14 @@ TEST_LIST = {{"test_map_correct", test_map_correct},
               test_mem_slow_path_only_on_hooked_pages},
              {"test_mem_slow_path_deleted_mid_run",
               test_mem_slow_path_deleted_mid_run},
+             {"test_mem_store_fast_path_on_executable_ram",
+              test_mem_store_fast_path_on_executable_ram},
+             {"test_mem_store_patches_code_of_its_own_window",
+              test_mem_store_patches_code_of_its_own_window},
+             {"test_mem_alias_cleaned_window_rearmed_by_new_code",
+              test_mem_alias_cleaned_window_rearmed_by_new_code},
+             {"test_mem_write_hook_added_after_clean",
+              test_mem_write_hook_added_after_clean},
+             {"test_mem_snapshot_after_clean_copies_on_write",
+              test_mem_snapshot_after_clean_copies_on_write},
              {NULL, NULL}};

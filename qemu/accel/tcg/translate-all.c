@@ -2142,7 +2142,7 @@ void tb_invalidate_phys_range(struct uc_struct *uc, ram_addr_t start, ram_addr_t
  *
  * Call with all @pages in the range [@start, @start + len[ locked.
  */
-QEMU_HOT void tb_invalidate_phys_page_fast(struct uc_struct *uc, struct page_collection *pages,
+QEMU_HOT bool tb_invalidate_phys_page_fast(struct uc_struct *uc, struct page_collection *pages,
                                   tb_page_addr_t start, int len,
                                   uintptr_t retaddr)
 {
@@ -2152,7 +2152,7 @@ QEMU_HOT void tb_invalidate_phys_page_fast(struct uc_struct *uc, struct page_col
 
     p = page_find(uc, start >> TARGET_PAGE_BITS);
     if (!p) {
-        return;
+        return false;
     }
 
     assert_page_locked(p);
@@ -2174,6 +2174,7 @@ QEMU_HOT void tb_invalidate_phys_page_fast(struct uc_struct *uc, struct page_col
         tb_invalidate_phys_page_range__locked(uc, pages, p, start, start + len,
                                               retaddr);
     }
+    return p->first_tb != (uintptr_t)NULL;
 }
 
 /* user-mode: call with mmap_lock held */
