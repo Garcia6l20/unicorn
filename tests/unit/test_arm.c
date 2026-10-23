@@ -1900,14 +1900,18 @@ static void test_arm_exit_after_insn_other_arch(void)
 {
     uc_engine *uc;
 
+#ifdef UNICORN_HAS_X86
     OK(uc_open(UC_ARCH_X86, UC_MODE_32, &uc));
     uc_assert_err(UC_ERR_ARG, uc_ctl_exit_after_insn_enable(uc));
     uc_assert_err(UC_ERR_ARG, uc_ctl_exit_after_insn(uc));
     OK(uc_close(uc));
+#endif
 
+#ifdef UNICORN_HAS_ARM64
     OK(uc_open(UC_ARCH_ARM64, UC_MODE_ARM, &uc));
     uc_assert_err(UC_ERR_ARG, uc_ctl_exit_after_insn_enable(uc));
     OK(uc_close(uc));
+#endif
 }
 
 #define V8M_EXCP_PREFETCH_ABORT 3
