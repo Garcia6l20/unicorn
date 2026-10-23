@@ -1818,8 +1818,9 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     if (phys_pc == -1) {
         /* Generate a temporary TB; do not cache */
         cflags |= CF_NOCACHE;
-        if (tlb_entry(env, cpu_mmu_index(env, true), pc)->addr_code &
-            TLB_INVALID_MASK) {
+        target_ulong ac =
+            tlb_entry(env, cpu_mmu_index(env, true), pc)->addr_code;
+        if (ac != (target_ulong)-1 && (ac & TLB_INVALID_MASK)) {
             cflags = (cflags & ~CF_COUNT_MASK) | 1;
         }
     }
