@@ -2424,9 +2424,12 @@ static void test_arm_v8m_fp_context(void)
                 (V8M_CONTROL_FPCA | V8M_CONTROL_SFPA)) == 0);
     OK(uc_close(uc));
 
-    uc = test_arm_v8m_fp_open(&run, 0);
+    uc = test_arm_v8m_fp_open(&run, V8M_CPACR_CP10_CP11);
     test_arm_v8m_reg(uc, UC_ARM_REG_FPCCR_S, V8M_FPCCR_S_NO_LSPEN);
-    test_arm_v8m_run(uc, &run, code_start, code_start + 12);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 8);
+    TEST_CHECK(run.intno == -1);
+    test_arm_v8m_reg(uc, UC_ARM_REG_CPACR_S, 0);
+    test_arm_v8m_run(uc, &run, code_start + 8, code_start + 12);
     TEST_CHECK(run.intno == V8M_EXCP_NOCP);
     TEST_CHECK(run.pc == code_start + 8);
     TEST_CHECK(test_arm_v8m_word(uc, V8M_FRAME) == V8M_UNTOUCHED);
@@ -2454,6 +2457,54 @@ static void test_arm_v8m_fp_context(void)
     uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_ARM, code, sizeof(code) - 1,
                     UC_CPU_ARM_CORTEX_A15);
     uc_assert_err(UC_ERR_ARG, uc_reg_read(uc, UC_ARM_REG_CPACR_NS, &ignored));
+    OK(uc_close(uc));
+}
+
+static uc_engine *test_arm_m_vmov_open(int cpu, V8M_RUN *run)
+{
+    char code[] = "\x00\xee\x10\x2a";
+    uc_engine *uc;
+    uc_hook hook;
+
+    uc_common_setup(&uc, UC_ARCH_ARM,
+                    cpu == UC_CPU_ARM_CORTEX_M33 ? UC_MODE_THUMB | UC_MODE_MCLASS
+                                                 : UC_MODE_THUMB,
+                    code, sizeof(code) - 1, cpu);
+    OK(uc_hook_add(uc, &hook, UC_HOOK_INTR, test_arm_v8m_intr, run, 1, 0));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, 0x3f800000);
+    test_arm_v8m_reg(uc, UC_ARM_REG_S0, 0);
+    return uc;
+}
+
+static void test_arm_m_cpacr_gates_fp(void)
+{
+    uc_engine *uc;
+    V8M_RUN run;
+    uint32_t ignored = 0;
+
+    uc = test_arm_m_vmov_open(UC_CPU_ARM_CORTEX_M4, &run);
+    test_arm_v8m_reg(uc, UC_ARM_REG_CPACR_NS, 0);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 4);
+    TEST_CHECK(run.intno == V8M_EXCP_NOCP);
+    TEST_CHECK(run.pc == code_start);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_S0) == 0);
+    test_arm_v8m_reg(uc, UC_ARM_REG_CPACR_NS, 0xffffffff);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_CPACR_NS) == V8M_CPACR_CP10_CP11);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 4);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_S0) == 0x3f800000);
+    uc_assert_err(UC_ERR_ARG, uc_reg_read(uc, UC_ARM_REG_CPACR_S, &ignored));
+    OK(uc_close(uc));
+
+    uc = test_arm_m_vmov_open(UC_CPU_ARM_CORTEX_M33, &run);
+    test_arm_v8m_reg(uc, UC_ARM_REG_CPACR_S, 0);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 4);
+    TEST_CHECK(run.intno == V8M_EXCP_NOCP);
+    TEST_CHECK(run.pc == code_start);
+    test_arm_v8m_reg(uc, UC_ARM_REG_CPACR_S, V8M_CPACR_CP10_CP11);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 4);
+    TEST_CHECK(run.intno == -1);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_S0) == 0x3f800000);
     OK(uc_close(uc));
 }
 
@@ -4703,12 +4754,14 @@ static void test_arm_v8m_nsacr_fp(void)
     char code[] = "\x00\xee\x10\x0a\x00\xbf";
 
     uc = test_arm_v8m_ns_open(code, sizeof(code) - 1, &run);
+    test_arm_v8m_reg(uc, UC_ARM_REG_CPACR_NS, V8M_CPACR_CP10_CP11);
     test_arm_v8m_nsacr_fp_leg(uc, &run, 0xc00, -1);
     test_arm_v8m_nsacr_fp_leg(uc, &run, 0, V8M_EXCP_NOCP);
     test_arm_v8m_nsacr_fp_leg(uc, &run, 0xc00, -1);
     OK(uc_close(uc));
 
     uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    test_arm_v8m_reg(uc, UC_ARM_REG_CPACR_S, V8M_CPACR_CP10_CP11);
     test_arm_v8m_nsacr_fp_leg(uc, &run, 0, -1);
     OK(uc_close(uc));
 }
@@ -5289,6 +5342,7 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_v8m_sau_isb", test_arm_v8m_sau_isb},
              {"test_arm_v8m_sau_subpage", test_arm_v8m_sau_subpage},
              {"test_arm_v8m_fp_context", test_arm_v8m_fp_context},
+             {"test_arm_m_cpacr_gates_fp", test_arm_m_cpacr_gates_fp},
              {"test_arm_v8m_banked_sp", test_arm_v8m_banked_sp},
              {"test_arm_v8m_banked_special", test_arm_v8m_banked_special},
              {"test_arm_v8m_fault_status", test_arm_v8m_fault_status},

@@ -259,6 +259,13 @@ static bool arm_v8m_has_fp_context(CPUARMState *env)
            cpu_isar_feature(aa32_vfp_simd, env_archcpu(env));
 }
 
+static bool arm_m_has_cpacr(CPUARMState *env, unsigned int regid)
+{
+    return arm_feature(env, ARM_FEATURE_M) &&
+           cpu_isar_feature(aa32_vfp_simd, env_archcpu(env)) &&
+           (regid == UC_ARM_REG_CPACR_NS || arm_v8m_has_security(env));
+}
+
 static uint32_t *arm_v8m_cpacr(CPUARMState *env, unsigned int regid)
 {
     return &env->v7m.cpacr[regid == UC_ARM_REG_CPACR_S ? M_REG_S : M_REG_NS];
@@ -558,7 +565,7 @@ uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
             break;
         case UC_ARM_REG_CPACR_S:
         case UC_ARM_REG_CPACR_NS:
-            if (!arm_v8m_has_fp_context(env)) {
+            if (!arm_m_has_cpacr(env, regid)) {
                 return UC_ERR_ARG;
             }
             CHECK_REG_TYPE(uint32_t);
@@ -862,11 +869,12 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
             break;
         case UC_ARM_REG_CPACR_S:
         case UC_ARM_REG_CPACR_NS:
-            if (!arm_v8m_has_fp_context(env)) {
+            if (!arm_m_has_cpacr(env, regid)) {
                 return UC_ERR_ARG;
             }
             CHECK_REG_TYPE(uint32_t);
             *arm_v8m_cpacr(env, regid) = *(uint32_t *)value & (0xf << 20);
+            arm_rebuild_hflags(env);
             break;
         case UC_ARM_REG_FPCCR_S:
         case UC_ARM_REG_FPCCR_NS:

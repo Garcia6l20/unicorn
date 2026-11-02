@@ -11518,10 +11518,15 @@ uint32_t HELPER(crc32c)(uint32_t acc, uint32_t val, uint32_t bytes)
  */
 int fp_exception_el(CPUARMState *env, int cur_el)
 {
-    if (arm_feature(env, ARM_FEATURE_M) &&
-        arm_feature(env, ARM_FEATURE_M_SECURITY) && !env->v7m.secure &&
+    if (!arm_feature(env, ARM_FEATURE_M)) {
+        return 0;
+    }
+    if (arm_feature(env, ARM_FEATURE_M_SECURITY) && !env->v7m.secure &&
         !extract32(env->v7m.nsacr, 10, 1)) {
         return 3;
+    }
+    if (!v7m_cpacr_pass(env, env->v7m.secure, cur_el != 0)) {
+        return 1;
     }
     return 0;
 }
