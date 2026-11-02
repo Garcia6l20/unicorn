@@ -4758,6 +4758,8 @@ static void test_arm_v8m_nsacr_fp(void)
     test_arm_v8m_nsacr_fp_leg(uc, &run, 0xc00, -1);
     test_arm_v8m_nsacr_fp_leg(uc, &run, 0, V8M_EXCP_NOCP);
     test_arm_v8m_nsacr_fp_leg(uc, &run, 0xc00, -1);
+    test_arm_v8m_reg(uc, UC_ARM_REG_CPACR_NS, 0);
+    test_arm_v8m_nsacr_fp_leg(uc, &run, 0xc00, V8M_EXCP_NOCP);
     OK(uc_close(uc));
 
     uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
