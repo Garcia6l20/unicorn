@@ -824,6 +824,56 @@ static void test_mem_write_prot_drop_store_scope(void)
     free(backing);
 }
 
+static bool test_rom_store_hook(uc_engine *uc, uc_mem_type type,
+                                uint64_t address, int size, int64_t value,
+                                void *user_data)
+{
+    int *calls = (int *)user_data;
+
+    TEST_CHECK(type == UC_MEM_WRITE_PROT);
+    TEST_CHECK(address == 0x2000 + 4 * (uint64_t)*calls);
+    TEST_CHECK(size == 4);
+    TEST_CHECK(value == 0x11223344);
+    (*calls)++;
+    OK(uc_ctl_drop_store(uc));
+    return true;
+}
+
+static void test_mem_write_prot_data_page_every_store(void)
+{
+    static const char code[] = "\xb8\x44\x33\x22\x11"
+                               "\xa3\x00\x20\x00\x00\x00\x00\x00\x00"
+                               "\xa3\x04\x20\x00\x00\x00\x00\x00\x00"
+                               "\xa3\x08\x20\x00\x00\x00\x00\x00\x00";
+    uint8_t *code_page = calloc(1, 0x1000);
+    uint8_t *data_page = calloc(1, 0x1000);
+    uc_engine *uc;
+    uc_hook hook;
+    int calls = 0;
+    uint8_t mem[12];
+    uint8_t const fill[12] = {0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
+                              0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa};
+
+    memcpy(code_page, code, sizeof(code) - 1);
+    memset(data_page, 0xaa, 0x1000);
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map_ptr(uc, 0x1000, 0x1000, UC_PROT_READ | UC_PROT_EXEC,
+                      code_page));
+    OK(uc_mem_map_ptr(uc, 0x2000, 0x1000, UC_PROT_READ, data_page));
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_WRITE_PROT, test_rom_store_hook,
+                   &calls, 1, 0));
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code) - 1, 0, 0));
+    TEST_CHECK(calls == 3);
+    OK(uc_mem_read(uc, 0x2000, mem, sizeof(mem)));
+    TEST_CHECK(memcmp(mem, fill, sizeof(mem)) == 0);
+    calls = 0;
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code) - 1, 0, 0));
+    TEST_CHECK(calls == 3);
+    OK(uc_close(uc));
+    free(code_page);
+    free(data_page);
+}
+
 static void test_mem_write_hook_flush_tlb_cb(uc_engine *uc, uc_mem_type type,
                                              uint64_t address, int size,
                                              int64_t value, void *user_data)
@@ -1552,6 +1602,8 @@ TEST_LIST = {{"test_map_correct", test_map_correct},
               test_mem_write_prot_handled_commits},
              {"test_mem_write_prot_drop_store_scope",
               test_mem_write_prot_drop_store_scope},
+             {"test_mem_write_prot_data_page_every_store",
+              test_mem_write_prot_data_page_every_store},
              {"test_mem_write_hook_flush_tlb", test_mem_write_hook_flush_tlb},
              {"test_mem_hook_bounded_to_page", test_mem_hook_bounded_to_page},
              {"test_mem_hook_read_after_bounded",

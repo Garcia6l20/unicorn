@@ -1009,6 +1009,7 @@ QEMU_HOT void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
             tn.addr_write |= TLB_INVALID_MASK;
         }
         if ((wp_flags & BP_MEM_WRITE) || bus_filter ||
+            (is_ram && !(section->mr->perms & UC_PROT_WRITE)) ||
             uc_mem_hooks_cover(cpu->uc, UC_HOOK_MEM_WRITE_IDX, paddr_page,
                                paddr_page + TARGET_PAGE_SIZE - 1)) {
             tn.addr_write |= TLB_WATCHPOINT;
