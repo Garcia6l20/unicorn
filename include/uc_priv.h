@@ -16,6 +16,10 @@
 // The max recursive nested uc_emu_start levels
 #define UC_MAX_NESTED_LEVEL (64)
 
+// Flag of the in_delay_slot argument of helper_check_exit_request: exit only
+// when an access recorded an invalid_error.
+#define UC_CHECK_INVALID_ERROR_ONLY 2u
+
 // These are masks of supported modes for each cpu/arch.
 // They should be updated when changes are made to the uc_mode enum typedef.
 #define UC_MODE_ARM_MASK                                                       \

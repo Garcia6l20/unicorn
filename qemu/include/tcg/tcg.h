@@ -1577,6 +1577,7 @@ static inline const TCGOpcode *tcg_swap_vecop_list(const TCGOpcode *n)
 bool tcg_can_emit_vecop_list(TCGContext *tcg_ctx, const TCGOpcode *, TCGType, unsigned);
 
 void check_exit_request(TCGContext *tcg_ctx);
+void check_invalid_error(TCGContext *tcg_ctx);
 
 void tcg_dump_ops(TCGContext *s, bool have_prefs, const char *headline);
 

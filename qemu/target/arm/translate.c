@@ -11286,6 +11286,7 @@ static void arm_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     dc->condexec_mask = (condexec & 0xf) << 1;
     dc->condexec_cond = condexec >> 4;
     dc->uc_it_mem_access = dc->condexec_mask != 0;
+    dc->uc_it_access_pending = dc->condexec_mask != 0;
 
     core_mmu_idx = FIELD_EX32(tb_flags, TBFLAG_ANY, MMUIDX);
     dc->mmu_idx = core_to_arm_mmu_idx(env, core_mmu_idx);
@@ -11517,6 +11518,19 @@ static void gen_uc_exit_after_insn(DisasContext *dc)
     gen_uc_exit_helper(dc, next_pc);
 }
 
+static bool uc_it_block_ended_after_access(DisasContext *dc, bool was_in_it)
+{
+    if (!was_in_it) {
+        return false;
+    }
+    dc->uc_it_access_pending |= dc->uc->tcg_ctx->uc_insn_mem_access;
+    if (dc->condexec_mask != 0 || !dc->uc_it_access_pending) {
+        return false;
+    }
+    dc->uc_it_access_pending = false;
+    return dc->base.is_jmp != DISAS_NORETURN;
+}
+
 static void arm_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 {
     DisasContext *dc = container_of(dcbase, DisasContext, base);
@@ -11615,6 +11629,8 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     CPUARMState *env = cpu->env_ptr;
     uint32_t insn;
     bool is_16bit;
+    bool was_in_it;
+    bool it_ended_after_access;
     uint32_t insn_size;
 
     if (arm_pre_translate_insn(dc)) {
@@ -11657,6 +11673,7 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     //   In other words, treat the whole IT block as
     //   a single instruction.
     uc->no_exit_request = (dc->condexec_mask != 0);
+    was_in_it = dc->condexec_mask != 0;
 
     // Unicorn: trace this instruction on request
     insn_size = is_16bit ? 2 : 4;
@@ -11694,7 +11711,11 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 
     arm_post_translate_insn(dc);
 
+    it_ended_after_access = uc_it_block_ended_after_access(dc, was_in_it);
     gen_uc_exit_after_insn(dc);
+    if (it_ended_after_access) {
+        check_invalid_error(dc->uc->tcg_ctx);
+    }
 
     /* Thumb is a variable-length ISA.  Stop translation when the next insn
      * will touch a new page.  This ensures that prefetch aborts occur at

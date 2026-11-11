@@ -168,6 +168,13 @@ void HELPER(exit_atomic)(CPUArchState *env)
 void HELPER(check_exit_request)(void *p, uint32_t in_delay_slot) {
     uc_engine *uc = p;
 
+    if (in_delay_slot & UC_CHECK_INVALID_ERROR_ONLY) {
+        if (uc->invalid_error == UC_ERR_OK) {
+            return;
+        }
+        in_delay_slot &= ~UC_CHECK_INVALID_ERROR_ONLY;
+    }
+
     if (cpu_loop_exit_requested(uc->cpu) && !in_delay_slot) {
         // There are stil something we have to before exiting to be compatible with previous behaviors
 
