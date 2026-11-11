@@ -2873,16 +2873,6 @@ void check_exit_request(TCGContext *tcg_ctx)
     tcg_temp_free_ptr(tcg_ctx, puc);
 }
 
-void check_invalid_error(TCGContext *tcg_ctx)
-{
-    TCGv_ptr puc = tcg_const_ptr(tcg_ctx, tcg_ctx->uc);
-    TCGv_i32 tmp = tcg_const_i32(tcg_ctx, UC_CHECK_INVALID_ERROR_ONLY);
-
-    gen_helper_check_exit_request(tcg_ctx, puc, tmp);
-    tcg_temp_free_i32(tcg_ctx, tmp);
-    tcg_temp_free_ptr(tcg_ctx, puc);
-}
-
 static void tcg_gen_req_mo(TCGContext *tcg_ctx, TCGBar type)
 {
 #ifdef TCG_GUEST_DEFAULT_MO

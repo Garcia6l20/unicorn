@@ -99,7 +99,6 @@ typedef struct DisasContext {
     // Unicorn
     struct uc_struct *uc;
     bool uc_it_mem_access;
-    bool uc_it_access_pending;
     bool uc_exit_on_condlabel;
 } DisasContext;
 

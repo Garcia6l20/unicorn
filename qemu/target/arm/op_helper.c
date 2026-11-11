@@ -287,6 +287,17 @@ void HELPER(uc_exit_after_insn)(CPUARMState *env, uint32_t next_pc,
     CPUState *cs = env_cpu(env);
 
     if (!uc->exit_after_insn) {
+        if (uc->invalid_error != UC_ERR_OK && cpu_loop_exit_requested(cs)) {
+            if (uc->nested_level == 1) {
+                tb_exec_unlock(uc);
+            }
+            cs->tcg_exit_req = 0;
+            if (uc->skip_sync_pc_on_exit) {
+                uc->skip_sync_pc_on_exit = false;
+                cpu_loop_exit(cs);
+            }
+            cpu_loop_exit_restore(cs, GETPC());
+        }
         return;
     }
     uc->exit_after_insn = false;
