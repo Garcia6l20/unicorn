@@ -1896,6 +1896,101 @@ static void test_arm_exit_after_insn_enable_flushes(void)
     OK(uc_close(uc));
 }
 
+/*
+ * A store to unmapped memory inside an IT block, with no exit armed: the
+ * exit-after-insn helper at the end of the block takes the recorded error.
+ */
+static void test_arm_exit_after_insn_it_store_unmapped(void)
+{
+    uc_engine *uc;
+    uint32_t r[5] = {0, 0x11, code_start + 0x2000, 0x60000000, 0};
+    uint32_t value;
+    int i;
+    /* cmp r0, r0; itt eq; streq r1, [r2]; streq r1, [r3]; adds r4, #1; nop */
+    char code[] = "\x80\x42\x04\xbf\x11\x60\x19\x60\x01\x34\x00\xbf";
+    uint64_t end = code_start + sizeof(code) - 1;
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS, code,
+                    sizeof(code) - 1, UC_CPU_ARM_CORTEX_M33);
+    for (i = 0; i < 5; i++) {
+        OK(uc_reg_write(uc, UC_ARM_REG_R0 + i, &r[i]));
+    }
+    OK(uc_ctl_exit_after_insn_enable(uc));
+    uc_assert_err(UC_ERR_WRITE_UNMAPPED,
+                  uc_emu_start(uc, code_start | 1, end, 0, 0));
+    OK(uc_reg_read(uc, UC_ARM_REG_PC, &value));
+    TEST_CHECK(value == code_start + 6);
+    TEST_MSG("pc 0x%x", value);
+    OK(uc_reg_read(uc, UC_ARM_REG_R4, &value));
+    TEST_CHECK(value == 0);
+    OK(uc_mem_read(uc, code_start + 0x2000, &value, sizeof(value)));
+    TEST_CHECK(value == 0x11);
+    OK(uc_close(uc));
+}
+
+/**
+ * cmp r0, r0; itt eq; streq r0, [r1]; isbeq; adds r2, #1; adds r2, #1
+ * The exit armed by the store is taken before the goto_tb of the ISB that
+ * closes the IT block.
+ */
+static void test_arm_exit_after_insn_it_isb(void)
+{
+    char code[] = "\x80\x42\x04\xbf\x08\x60\xbf\xf3\x6f\x8f\x01\x32\x01\x32";
+    EXIT_AFTER_INSN_REGS regs =
+        exit_after_insn_check_m(code, sizeof(code) - 1, 0xa, 1, 6);
+
+    TEST_CHECK(regs.r[2] == 0);
+}
+
+/**
+ * cmp r0, r0; itt eq; streq r0, [r1]; sbeq; adds r2, #1; adds r2, #1
+ * Same as it_isb with the SB barrier, on an A-profile core that has it.
+ */
+static void test_arm_exit_after_insn_it_sb(void)
+{
+    char code[] = "\x80\x42\x04\xbf\x08\x60\xbf\xf3\x70\x8f\x01\x32\x01\x32";
+    EXIT_AFTER_INSN_REGS regs = exit_after_insn_check(
+        UC_MODE_THUMB, UC_CPU_ARM_MAX, code_start, code, sizeof(code) - 1, 0,
+        code_start + 0xa, 1, code_start + 6);
+
+    TEST_CHECK(regs.r[2] == 0);
+}
+
+/*
+ * The store error of an IT block that ends in a direct branch is taken before
+ * the branch's goto_tb, with pc on the branch.
+ */
+static void test_arm_exit_after_insn_it_branch_store_unmapped(void)
+{
+    uc_engine *uc;
+    uint32_t r[5] = {0, 0x11, code_start + 0x2000, 0x60000000, 0};
+    uint32_t value;
+    int i;
+    /* cmp r0, r0; ittt eq; streq r1, [r2]; streq r1, [r3]; beq.w 1f;
+       adds r4, #1; adds r4, #1; 1: nop */
+    char code[] =
+        "\x80\x42\x02\xbf\x11\x60\x19\x60\x00\xf0\x02\xb8\x01\x34\x01\x34"
+        "\x00\xbf";
+    uint64_t end = code_start + sizeof(code) - 1;
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS, code,
+                    sizeof(code) - 1, UC_CPU_ARM_CORTEX_M33);
+    for (i = 0; i < 5; i++) {
+        OK(uc_reg_write(uc, UC_ARM_REG_R0 + i, &r[i]));
+    }
+    OK(uc_ctl_exit_after_insn_enable(uc));
+    uc_assert_err(UC_ERR_WRITE_UNMAPPED,
+                  uc_emu_start(uc, code_start | 1, end, 0, 0));
+    OK(uc_reg_read(uc, UC_ARM_REG_PC, &value));
+    TEST_CHECK(value == code_start + 8);
+    TEST_MSG("pc 0x%x", value);
+    OK(uc_reg_read(uc, UC_ARM_REG_R4, &value));
+    TEST_CHECK(value == 0);
+    OK(uc_mem_read(uc, code_start + 0x2000, &value, sizeof(value)));
+    TEST_CHECK(value == 0x11);
+    OK(uc_close(uc));
+}
+
 static void test_arm_exit_after_insn_other_arch(void)
 {
     uc_engine *uc;
@@ -6287,6 +6382,12 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
               test_arm_exit_after_insn_cleared_by_emu_start},
              {"test_arm_exit_after_insn_enable_flushes",
               test_arm_exit_after_insn_enable_flushes},
+             {"test_arm_exit_after_insn_it_store_unmapped",
+              test_arm_exit_after_insn_it_store_unmapped},
+             {"test_arm_exit_after_insn_it_isb", test_arm_exit_after_insn_it_isb},
+             {"test_arm_exit_after_insn_it_sb", test_arm_exit_after_insn_it_sb},
+             {"test_arm_exit_after_insn_it_branch_store_unmapped",
+              test_arm_exit_after_insn_it_branch_store_unmapped},
              {"test_arm_exit_after_insn_other_arch",
               test_arm_exit_after_insn_other_arch},
              {"test_arm_v8m_lookup_on", test_arm_v8m_lookup_on},

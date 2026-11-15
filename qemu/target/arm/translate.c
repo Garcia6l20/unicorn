@@ -2725,15 +2725,38 @@ static bool uc_exit_pending(DisasContext *s)
            (s->uc_it_mem_access || s->uc->tcg_ctx->uc_insn_mem_access);
 }
 
+/*
+ * Unicorn: helper_uc_exit_after_insn does nothing unless an exit after the
+ * instruction is armed or an access recorded an error, both rare. Branch over
+ * the call when neither is set. Every caller emits it where no translator
+ * temp is live across the brcond.
+ */
 static void gen_uc_exit_helper(DisasContext *s, uint32_t next_pc)
 {
     TCGContext *tcg_ctx = s->uc->tcg_ctx;
-    TCGv_i32 pc = tcg_const_i32(tcg_ctx, next_pc);
-    TCGv_i32 insn_pc = tcg_const_i32(tcg_ctx, s->pc_curr);
+    TCGLabel *skip = gen_new_label(tcg_ctx);
+    TCGv_ptr puc = tcg_const_ptr(tcg_ctx, s->uc);
+    TCGv_i32 armed = tcg_temp_new_i32(tcg_ctx);
+    TCGv_i32 error = tcg_temp_new_i32(tcg_ctx);
+    TCGv_i32 pc;
+    TCGv_i32 insn_pc;
 
+    tcg_gen_ld8u_i32(tcg_ctx, armed, puc,
+                     offsetof(struct uc_struct, exit_after_insn));
+    tcg_gen_ld_i32(tcg_ctx, error, puc,
+                   offsetof(struct uc_struct, invalid_error));
+    tcg_gen_or_i32(tcg_ctx, armed, armed, error);
+    tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_EQ, armed, 0, skip);
+    tcg_temp_free_i32(tcg_ctx, error);
+    tcg_temp_free_i32(tcg_ctx, armed);
+    tcg_temp_free_ptr(tcg_ctx, puc);
+
+    pc = tcg_const_i32(tcg_ctx, next_pc);
+    insn_pc = tcg_const_i32(tcg_ctx, s->pc_curr);
     gen_helper_uc_exit_after_insn(tcg_ctx, tcg_ctx->cpu_env, pc, insn_pc);
     tcg_temp_free_i32(tcg_ctx, insn_pc);
     tcg_temp_free_i32(tcg_ctx, pc);
+    gen_set_label(tcg_ctx, skip);
     s->uc_it_mem_access = false;
     tcg_ctx->uc_insn_mem_access = false;
     if (s->condjmp) {
