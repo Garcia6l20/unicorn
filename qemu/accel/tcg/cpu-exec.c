@@ -358,6 +358,9 @@ static inline bool cpu_handle_exception(CPUState *cpu, int *ret)
                 break;
             }
         }
+        if (catched) {
+            uc->skip_sync_pc_on_exit = false;
+        }
         if (!catched) {
             uc->invalid_error = UC_ERR_INSN_INVALID;
             // we want to stop emulation
@@ -416,6 +419,7 @@ static inline bool cpu_handle_exception(CPUState *cpu, int *ret)
             JIT_CALLBACK_GUARD(((uc_cb_hookintr_t)hook->callback)(uc, cpu->exception_index, hook->user_data));
             catched = true;
         }
+        uc->skip_sync_pc_on_exit = false;
         // Unicorn: If un-catched interrupt, stop executions.
         if (!catched) {
             // printf("AAAAAAAAAAAA\n"); qq

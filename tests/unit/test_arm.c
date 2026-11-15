@@ -5883,6 +5883,92 @@ static void test_arm_tb_budget_mode_switch(void)
 #endif
 }
 
+typedef struct _MEM_PC_RESULT {
+    uint32_t pcs[8];
+    int count;
+} MEM_PC_RESULT;
+
+static void mem_pc_read_cb(uc_engine *uc, uc_mem_type type, uint64_t address,
+                           int size, int64_t value, void *user_data)
+{
+    MEM_PC_RESULT *result = user_data;
+    uint32_t pc = 0;
+
+    OK(uc_reg_read(uc, UC_ARM_REG_PC, &pc));
+    if (result->count < 8) {
+        result->pcs[result->count] = pc;
+    }
+    result->count++;
+}
+
+static void mem_pc_intr_cb(uc_engine *uc, uint32_t intno, void *user_data)
+{
+    uint32_t target = *(uint32_t *)user_data;
+
+    OK(uc_reg_write(uc, UC_ARM_REG_PC, &target));
+}
+
+static bool mem_pc_invalid_cb(uc_engine *uc, void *user_data)
+{
+    mem_pc_intr_cb(uc, 0, user_data);
+    return true;
+}
+
+static void mem_pc_check(uc_engine *uc, MEM_PC_RESULT *result)
+{
+    OK(uc_emu_start(uc, code_start | 1, code_start + 0x18, 0, 0));
+
+    TEST_CHECK(result->count == 3);
+    TEST_CHECK(result->pcs[0] == code_start + 0x10);
+    TEST_CHECK(result->pcs[1] == code_start + 0x12);
+    TEST_CHECK(result->pcs[2] == code_start + 0x14);
+}
+
+static void test_arm_mem_hook_pc_after_intr_pc_write(void)
+{
+    uc_engine *uc;
+    uc_hook intr_hook, mem_hook;
+    MEM_PC_RESULT result = {0};
+    uint32_t target = (code_start + 0x10) | 1;
+    uint32_t base = 0x3000;
+    char code[0x20] = "\x00\xdf";
+
+    memcpy(code + 0x10, "\x08\x68\x0a\x68\x0b\x68\x00\xbf", 8);
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB, code, sizeof(code),
+                    UC_CPU_ARM_CORTEX_A15);
+    OK(uc_reg_write(uc, UC_ARM_REG_R1, &base));
+    OK(uc_hook_add(uc, &intr_hook, UC_HOOK_INTR, mem_pc_intr_cb, &target, 1,
+                   0));
+    OK(uc_hook_add(uc, &mem_hook, UC_HOOK_MEM_READ, mem_pc_read_cb, &result,
+                   base, base + 3));
+
+    mem_pc_check(uc, &result);
+
+    OK(uc_close(uc));
+}
+
+static void test_arm_mem_hook_pc_after_invalid_insn_pc_write(void)
+{
+    uc_engine *uc;
+    uc_hook invalid_hook, mem_hook;
+    MEM_PC_RESULT result = {0};
+    uint32_t target = (code_start + 0x10) | 1;
+    uint32_t base = 0x3000;
+    char code[0x20] = "\xff\xde";
+
+    memcpy(code + 0x10, "\x08\x68\x0a\x68\x0b\x68\x00\xbf", 8);
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB, code, sizeof(code),
+                    UC_CPU_ARM_CORTEX_A15);
+    OK(uc_reg_write(uc, UC_ARM_REG_R1, &base));
+    OK(uc_hook_add(uc, &invalid_hook, UC_HOOK_INSN_INVALID, mem_pc_invalid_cb,
+                   &target, 1, 0));
+    OK(uc_hook_add(uc, &mem_hook, UC_HOOK_MEM_READ, mem_pc_read_cb, &result,
+                   base, base + 3));
+    mem_pc_check(uc, &result);
+
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
@@ -6075,4 +6161,8 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_tb_budget_request_exit_sticky",
               test_arm_tb_budget_request_exit_sticky},
              {"test_arm_tb_budget_mode_switch", test_arm_tb_budget_mode_switch},
+             {"test_arm_mem_hook_pc_after_intr_pc_write",
+              test_arm_mem_hook_pc_after_intr_pc_write},
+             {"test_arm_mem_hook_pc_after_invalid_insn_pc_write",
+              test_arm_mem_hook_pc_after_invalid_insn_pc_write},
              {NULL, NULL}};
