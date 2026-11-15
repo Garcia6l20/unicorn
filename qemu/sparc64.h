@@ -590,6 +590,7 @@
 #define tcg_gen_goto_tb tcg_gen_goto_tb_sparc64
 #define tcg_gen_lookup_and_goto_ptr tcg_gen_lookup_and_goto_ptr_sparc64
 #define check_exit_request check_exit_request_sparc64
+#define uc_exit_request_ra uc_exit_request_ra_sparc64
 #define tcg_gen_qemu_ld_i32 tcg_gen_qemu_ld_i32_sparc64
 #define tcg_gen_qemu_st_i32 tcg_gen_qemu_st_i32_sparc64
 #define tcg_gen_qemu_ld_i64 tcg_gen_qemu_ld_i64_sparc64

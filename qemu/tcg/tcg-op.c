@@ -2812,10 +2812,33 @@ static inline MemOp tcg_canonicalize_memop(MemOp op, bool is64, bool st)
     return op;
 }
 
+/*
+ * Unicorn: true when the backend tests for an exit request after this guest
+ * access, so check_exit_request_ldst emits no helper call.
+ */
+static bool uc_exit_inline(TCGContext *tcg_ctx)
+{
+#ifdef TCG_TARGET_HAS_UC_EXIT_CHECK
+    return !tcg_ctx->uc->no_exit_request && tcg_ctx->delay_slot_flag == NULL;
+#else
+    return false;
+#endif
+}
+
+static TCGMemOpIdx uc_ldst_oi(TCGContext *tcg_ctx, MemOp memop, TCGArg idx)
+{
+    TCGMemOpIdx oi = make_memop_idx(memop, idx);
+
+    if (uc_exit_inline(tcg_ctx)) {
+        oi |= TCG_OI_UC_EXIT;
+    }
+    return oi;
+}
+
 static void gen_ldst_i32(TCGContext *tcg_ctx, TCGOpcode opc, TCGv_i32 val, TCGv addr,
                          MemOp memop, TCGArg idx)
 {
-    TCGMemOpIdx oi = make_memop_idx(memop, idx);
+    TCGMemOpIdx oi = uc_ldst_oi(tcg_ctx, memop, idx);
 #if TARGET_LONG_BITS == 32
     tcg_gen_op3i_i32(tcg_ctx, opc, val, addr, oi);
 #else
@@ -2830,7 +2853,7 @@ static void gen_ldst_i32(TCGContext *tcg_ctx, TCGOpcode opc, TCGv_i32 val, TCGv 
 static void gen_ldst_i64(TCGContext *tcg_ctx, TCGOpcode opc, TCGv_i64 val, TCGv addr,
                          MemOp memop, TCGArg idx)
 {
-    TCGMemOpIdx oi = make_memop_idx(memop, idx);
+    TCGMemOpIdx oi = uc_ldst_oi(tcg_ctx, memop, idx);
 #if TARGET_LONG_BITS == 32
 #if TCG_TARGET_REG_BITS == 32
         tcg_gen_op4i_i32(tcg_ctx, opc, TCGV_LOW(tcg_ctx, val), TCGV_HIGH(tcg_ctx, val), addr, oi);
@@ -2871,6 +2894,15 @@ void check_exit_request(TCGContext *tcg_ctx)
     gen_helper_check_exit_request(tcg_ctx, puc, tmp);
     tcg_temp_free_i32(tcg_ctx, tmp);
     tcg_temp_free_ptr(tcg_ctx, puc);
+}
+
+static void check_exit_request_ldst(TCGContext *tcg_ctx)
+{
+    if (uc_exit_inline(tcg_ctx)) {
+        tcg_ctx->uc_insn_mem_access = true;
+        return;
+    }
+    check_exit_request(tcg_ctx);
 }
 
 static void tcg_gen_req_mo(TCGContext *tcg_ctx, TCGBar type)
@@ -2918,7 +2950,7 @@ void tcg_gen_qemu_ld_i32(TCGContext *tcg_ctx, TCGv_i32 val, TCGv addr, TCGArg id
         }
     }
 
-    check_exit_request(tcg_ctx);
+    check_exit_request_ldst(tcg_ctx);
 }
 
 void tcg_gen_qemu_st_i32(TCGContext *tcg_ctx, TCGv_i32 val, TCGv addr, TCGArg idx, MemOp memop)
@@ -2953,7 +2985,7 @@ void tcg_gen_qemu_st_i32(TCGContext *tcg_ctx, TCGv_i32 val, TCGv addr, TCGArg id
         tcg_temp_free_i32(tcg_ctx, swap);
     }
 
-    check_exit_request(tcg_ctx);
+    check_exit_request_ldst(tcg_ctx);
 }
 
 void tcg_gen_qemu_ld_i64(TCGContext *tcg_ctx, TCGv_i64 val, TCGv addr, TCGArg idx, MemOp memop)
@@ -2968,7 +3000,7 @@ void tcg_gen_qemu_ld_i64(TCGContext *tcg_ctx, TCGv_i64 val, TCGv addr, TCGArg id
         } else {
             tcg_gen_movi_i32(tcg_ctx, TCGV_HIGH(tcg_ctx, val), 0);
         }
-        check_exit_request(tcg_ctx);
+        check_exit_request_ldst(tcg_ctx);
         return;
     }
 #endif
@@ -3010,7 +3042,7 @@ void tcg_gen_qemu_ld_i64(TCGContext *tcg_ctx, TCGv_i64 val, TCGv addr, TCGArg id
             g_assert_not_reached();
         }
     }
-    check_exit_request(tcg_ctx);
+    check_exit_request_ldst(tcg_ctx);
 }
 
 void tcg_gen_qemu_st_i64(TCGContext *tcg_ctx, TCGv_i64 val, TCGv addr, TCGArg idx, MemOp memop)
@@ -3020,7 +3052,7 @@ void tcg_gen_qemu_st_i64(TCGContext *tcg_ctx, TCGv_i64 val, TCGv addr, TCGArg id
 #if TCG_TARGET_REG_BITS == 32
     if ((memop & MO_SIZE) < MO_64) {
         tcg_gen_qemu_st_i32(tcg_ctx, TCGV_LOW(tcg_ctx, val), addr, idx, memop);
-        check_exit_request(tcg_ctx);
+        check_exit_request_ldst(tcg_ctx);
         return;
     }
 #endif
@@ -3056,7 +3088,7 @@ void tcg_gen_qemu_st_i64(TCGContext *tcg_ctx, TCGv_i64 val, TCGv addr, TCGArg id
     if (swap) {
         tcg_temp_free_i64(tcg_ctx, swap);
     }
-    check_exit_request(tcg_ctx);
+    check_exit_request_ldst(tcg_ctx);
 }
 
 static void tcg_gen_ext_i32(TCGContext *tcg_ctx, TCGv_i32 ret, TCGv_i32 val, MemOp opc)

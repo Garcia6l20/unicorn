@@ -1580,6 +1580,14 @@ bool tcg_can_emit_vecop_list(TCGContext *tcg_ctx, const TCGOpcode *, TCGType, un
 
 void check_exit_request(TCGContext *tcg_ctx);
 
+/*
+ * Unicorn: memop index bit of a qemu_ld/st op asking a backend that defines
+ * TCG_TARGET_HAS_UC_EXIT_CHECK to test for an exit request after the access,
+ * in place of a check_exit_request helper call.
+ */
+#define TCG_OI_UC_EXIT (1u << 31)
+void QEMU_NORETURN uc_exit_request_ra(void *env, uintptr_t ra);
+
 void tcg_dump_ops(TCGContext *s, bool have_prefs, const char *headline);
 
 struct jit_code_entry {

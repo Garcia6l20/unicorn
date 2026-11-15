@@ -1810,11 +1810,48 @@ static void add_qemu_ldst_label(TCGContext *s, bool is_ld, bool is_64,
     label->addrlo_reg = addrlo;
     label->addrhi_reg = addrhi;
     label->raddr = raddr;
+#ifdef TCG_TARGET_HAS_UC_EXIT_CHECK
+    label->uc_exit = false;
+#endif
     label->label_ptr[0] = label_ptr[0];
     if (TARGET_LONG_BITS > TCG_TARGET_REG_BITS) {
         label->label_ptr[1] = label_ptr[1];
     }
 }
+
+#ifdef TCG_TARGET_HAS_UC_EXIT_CHECK
+/*
+ * Unicorn: after a guest load or store, jump out of line when an exit is
+ * requested (icount_decr.u32 < 0). The stub takes the exit that
+ * helper_check_exit_request would take, restoring the guest state from raddr,
+ * the code address right after the access. The TLB slow path returns to
+ * raddr, so both paths reach the test.
+ */
+static void tcg_out_uc_exit_check(TCGContext *s, tcg_insn_unit *raddr)
+{
+    TCGLabelQemuLdst *label = new_ldst_label(s);
+
+    label->is_ld = false;
+    label->uc_exit = true;
+    label->raddr = raddr;
+    tcg_out_modrm_offset(s, OPC_ARITH_EvIb, ARITH_CMP, TCG_AREG0,
+                         (int)offsetof(ArchCPU, neg.icount_decr.u32) -
+                             (int)offsetof(ArchCPU, env));
+    tcg_out8(s, 0);
+    tcg_out_opc(s, OPC_JCC_long + JCC_JL, 0, 0, 0);
+    label->label_ptr[0] = s->code_ptr;
+    s->code_ptr += 4;
+}
+
+static void tcg_out_uc_exit_stub(TCGContext *s, TCGLabelQemuLdst *l)
+{
+    tcg_patch32(l->label_ptr[0], s->code_ptr - l->label_ptr[0] - 4);
+    tcg_out_mov(s, TCG_TYPE_PTR, tcg_target_call_iarg_regs[0], TCG_AREG0);
+    tcg_out_movi(s, TCG_TYPE_PTR, tcg_target_call_iarg_regs[1],
+                 (uintptr_t)l->raddr);
+    tcg_out_call(s, (tcg_insn_unit *)uc_exit_request_ra);
+}
+#endif
 
 /*
  * Generate code for the slow path for a load at the end of block
@@ -2083,12 +2120,19 @@ static void tcg_out_qemu_ld(TCGContext *s, const TCGArg *args, bool is64)
     MemOp opc;
     int mem_index;
     tcg_insn_unit *label_ptr[2];
+#ifdef TCG_TARGET_HAS_UC_EXIT_CHECK
+    bool uc_exit;
+#endif
 
     datalo = *args++;
     datahi = (TCG_TARGET_REG_BITS == 32 && is64 ? *args++ : 0);
     addrlo = *args++;
     addrhi = (TARGET_LONG_BITS > TCG_TARGET_REG_BITS ? *args++ : 0);
     oi = *args++;
+#ifdef TCG_TARGET_HAS_UC_EXIT_CHECK
+    uc_exit = (oi & TCG_OI_UC_EXIT) != 0;
+    oi &= ~TCG_OI_UC_EXIT;
+#endif
     opc = get_memop(oi);
 
     mem_index = get_mmuidx(oi);
@@ -2102,6 +2146,11 @@ static void tcg_out_qemu_ld(TCGContext *s, const TCGArg *args, bool is64)
     /* Record the current context of a load into ldst label */
     add_qemu_ldst_label(s, true, is64, oi, datalo, datahi, addrlo, addrhi,
                         s->code_ptr, label_ptr);
+#ifdef TCG_TARGET_HAS_UC_EXIT_CHECK
+    if (uc_exit) {
+        tcg_out_uc_exit_check(s, s->code_ptr);
+    }
+#endif
 }
 
 static void tcg_out_qemu_st_direct(TCGContext *s, TCGReg datalo, TCGReg datahi,
@@ -2193,12 +2242,19 @@ static void tcg_out_qemu_st(TCGContext *s, const TCGArg *args, bool is64)
     MemOp opc;
     int mem_index;
     tcg_insn_unit *label_ptr[2];
+#ifdef TCG_TARGET_HAS_UC_EXIT_CHECK
+    bool uc_exit;
+#endif
 
     datalo = *args++;
     datahi = (TCG_TARGET_REG_BITS == 32 && is64 ? *args++ : 0);
     addrlo = *args++;
     addrhi = (TARGET_LONG_BITS > TCG_TARGET_REG_BITS ? *args++ : 0);
     oi = *args++;
+#ifdef TCG_TARGET_HAS_UC_EXIT_CHECK
+    uc_exit = (oi & TCG_OI_UC_EXIT) != 0;
+    oi &= ~TCG_OI_UC_EXIT;
+#endif
     opc = get_memop(oi);
 
     mem_index = get_mmuidx(oi);
@@ -2212,6 +2268,11 @@ static void tcg_out_qemu_st(TCGContext *s, const TCGArg *args, bool is64)
     /* Record the current context of a store into ldst label */
     add_qemu_ldst_label(s, false, is64, oi, datalo, datahi, addrlo, addrhi,
                         s->code_ptr, label_ptr);
+#ifdef TCG_TARGET_HAS_UC_EXIT_CHECK
+    if (uc_exit) {
+        tcg_out_uc_exit_check(s, s->code_ptr);
+    }
+#endif
 }
 
 static inline void tcg_out_op(TCGContext *s, TCGOpcode opc,

@@ -165,6 +165,27 @@ void HELPER(exit_atomic)(CPUArchState *env)
     cpu_loop_exit_atomic(env_cpu(env), GETPC());
 }
 
+/*
+ * Unicorn: the exit taken by helper_check_exit_request, entered from code
+ * that has already seen the exit request, with ra in the guest instruction
+ * that made the access.
+ */
+void uc_exit_request_ra(void *envp, uintptr_t ra)
+{
+    CPUState *cpu = env_cpu((CPUArchState *)envp);
+    uc_engine *uc = cpu->uc;
+
+    if (uc->nested_level == 1) {
+        tb_exec_unlock(uc);
+    }
+    cpu->tcg_exit_req = 0;
+    if (uc->skip_sync_pc_on_exit) {
+        uc->skip_sync_pc_on_exit = false;
+        cpu_loop_exit(cpu);
+    }
+    cpu_loop_exit_restore(cpu, ra);
+}
+
 void HELPER(check_exit_request)(void *p, uint32_t in_delay_slot) {
     uc_engine *uc = p;
 

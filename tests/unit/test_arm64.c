@@ -3,6 +3,7 @@
 #include "unicorn_test.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdio.h>
 
 const uint64_t code_start = 0x1000;
@@ -944,6 +945,51 @@ static void test_arm64_pauth_ctl(void)
     OK(uc_close(uc));
 }
 
+static uint64_t test_arm64_exit_request_read(uc_engine *uc, uint64_t offset,
+                                             unsigned size, void *user_data)
+{
+    OK(uc_emu_stop(uc));
+    return 0xabcd;
+}
+
+/*
+ * A stop from an MMIO read leaves pc on the load. The load destination is a
+ * TCG global: on x86-64 hosts the exit is taken before it reaches env, so X1
+ * keeps its old value.
+ */
+static void test_arm64_exit_request_load(void)
+{
+    uc_engine *uc;
+    uint64_t r[4] = {0x40000000, 0x55, 0, 0};
+    uint64_t pc, x1, x2, x3;
+    int i;
+    /* add x3, x3, #1; ldr x1, [x0]; add x2, x2, #1; nop */
+    char code[] = "\x63\x04\x00\x91\x01\x00\x40\xf9\x42\x04\x00\x91\x1f\x20"
+                  "\x03\xd5";
+
+    uc_common_setup(&uc, UC_ARCH_ARM64, UC_MODE_ARM, code, sizeof(code) - 1,
+                    UC_CPU_ARM64_A72);
+    OK(uc_mmio_map(uc, 0x40000000, 0x1000, test_arm64_exit_request_read, NULL,
+                   NULL, NULL));
+    for (i = 0; i < 4; i++) {
+        OK(uc_reg_write(uc, UC_ARM64_REG_X0 + i, &r[i]));
+    }
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1, 0, 0));
+    OK(uc_reg_read(uc, UC_ARM64_REG_PC, &pc));
+    OK(uc_reg_read(uc, UC_ARM64_REG_X1, &x1));
+    OK(uc_reg_read(uc, UC_ARM64_REG_X2, &x2));
+    OK(uc_reg_read(uc, UC_ARM64_REG_X3, &x3));
+    TEST_CHECK(pc == code_start + 4);
+    TEST_MSG("pc 0x%" PRIx64, pc);
+    TEST_CHECK(x3 == 1);
+    TEST_CHECK(x2 == 0);
+#if defined(__x86_64__)
+    TEST_CHECK(x1 == 0x55);
+#endif
+    TEST_MSG("x1 0x%" PRIx64, x1);
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_arm64_until", test_arm64_until},
              {"test_arm64_code_patching", test_arm64_code_patching},
              {"test_arm64_code_patching_count", test_arm64_code_patching_count},
@@ -965,4 +1011,5 @@ TEST_LIST = {{"test_arm64_until", test_arm64_until},
              {"test_arm64_pc_guarantee", test_arm64_pc_guarantee},
              {"test_arm64_pauth_vanilla", test_arm64_pauth_vanilla},
              {"test_arm64_pauth_ctl", test_arm64_pauth_ctl},
+             {"test_arm64_exit_request_load", test_arm64_exit_request_load},
              {NULL, NULL}};

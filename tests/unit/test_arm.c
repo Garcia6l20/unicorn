@@ -5969,6 +5969,243 @@ static void test_arm_mem_hook_pc_after_invalid_insn_pc_write(void)
     OK(uc_close(uc));
 }
 
+#define EXIT_REQUEST_MMIO 0x40000000
+
+typedef struct _EXIT_REQUEST_LOG {
+    int reads;
+    int writes;
+    int stop_on;
+    uint32_t pc_on_stop;
+} EXIT_REQUEST_LOG;
+
+static void exit_request_access(uc_engine *uc, EXIT_REQUEST_LOG *log)
+{
+    if (log->reads + log->writes == log->stop_on) {
+        if (log->pc_on_stop) {
+            OK(uc_reg_write(uc, UC_ARM_REG_PC, &log->pc_on_stop));
+        }
+        OK(uc_emu_stop(uc));
+    }
+}
+
+static uint64_t exit_request_read(uc_engine *uc, uint64_t offset, unsigned size,
+                                  void *user_data)
+{
+    EXIT_REQUEST_LOG *log = user_data;
+
+    log->reads++;
+    exit_request_access(uc, log);
+    return 0xabcd;
+}
+
+static void exit_request_write(uc_engine *uc, uint64_t offset, unsigned size,
+                               uint64_t value, void *user_data)
+{
+    EXIT_REQUEST_LOG *log = user_data;
+
+    log->writes++;
+    exit_request_access(uc, log);
+}
+
+static uc_engine *exit_request_open(const char *code, uint64_t size,
+                                    EXIT_REQUEST_LOG *log)
+{
+    uc_engine *uc;
+    uint32_t r[5] = {EXIT_REQUEST_MMIO, 0x55, 0, 0, 0};
+    int i;
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS, code,
+                    size, UC_CPU_ARM_CORTEX_M33);
+    OK(uc_mmio_map(uc, EXIT_REQUEST_MMIO, 0x1000, exit_request_read, log,
+                   exit_request_write, log));
+    for (i = 0; i < 5; i++) {
+        OK(uc_reg_write(uc, UC_ARM_REG_R0 + i, &r[i]));
+    }
+    return uc;
+}
+
+static uint32_t exit_request_reg(uc_engine *uc, int reg)
+{
+    uint32_t value;
+
+    OK(uc_reg_read(uc, reg, &value));
+    return value;
+}
+
+/* A stop from an MMIO read leaves pc on the load, with nothing after it run. */
+static void test_arm_exit_request_load(void)
+{
+    uc_engine *uc;
+    EXIT_REQUEST_LOG log = {0, 0, 1};
+    /* adds r3, #1; ldr r1, [r0]; adds r2, #1; nop */
+    char code[] = "\x01\x33\x01\x68\x01\x32\x00\xbf";
+    uint64_t end = code_start + sizeof(code) - 1;
+
+    uc = exit_request_open(code, sizeof(code) - 1, &log);
+    OK(uc_emu_start(uc, code_start | 1, end, 0, 0));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_PC) == code_start + 2);
+    TEST_MSG("pc 0x%x", exit_request_reg(uc, UC_ARM_REG_PC));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R3) == 1);
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R1) == 0x55);
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R2) == 0);
+    TEST_CHECK(log.reads == 1);
+
+    OK(uc_emu_start(uc, code_start + 3, end, 0, 0));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_PC) == end);
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R1) == 0xabcd);
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R2) == 1);
+    TEST_CHECK(log.reads == 2);
+    OK(uc_close(uc));
+}
+
+/* A stop from an MMIO write leaves pc on the store, which a resume repeats. */
+static void test_arm_exit_request_store(void)
+{
+    uc_engine *uc;
+    EXIT_REQUEST_LOG log = {0, 0, 1};
+    /* adds r3, #1; str r1, [r0]; adds r2, #1; nop */
+    char code[] = "\x01\x33\x01\x60\x01\x32\x00\xbf";
+    uint64_t end = code_start + sizeof(code) - 1;
+
+    uc = exit_request_open(code, sizeof(code) - 1, &log);
+    OK(uc_emu_start(uc, code_start | 1, end, 0, 0));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_PC) == code_start + 2);
+    TEST_MSG("pc 0x%x", exit_request_reg(uc, UC_ARM_REG_PC));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R3) == 1);
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R2) == 0);
+    TEST_CHECK(log.writes == 1);
+
+    OK(uc_emu_start(uc, code_start + 3, end, 0, 0));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_PC) == end);
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R2) == 1);
+    TEST_CHECK(log.writes == 2);
+    OK(uc_close(uc));
+}
+
+/* The stop comes right after the first access of a load multiple. */
+static void test_arm_exit_request_ldm(void)
+{
+    uc_engine *uc;
+    EXIT_REQUEST_LOG log = {0, 0, 1};
+    /* adds r3, #1; ldmia r0!, {r1, r2}; adds r4, #1; nop */
+    char code[] = "\x01\x33\x06\xc8\x01\x34\x00\xbf";
+    uint64_t end = code_start + sizeof(code) - 1;
+
+    uc = exit_request_open(code, sizeof(code) - 1, &log);
+    OK(uc_emu_start(uc, code_start | 1, end, 0, 0));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_PC) == code_start + 2);
+    TEST_MSG("pc 0x%x", exit_request_reg(uc, UC_ARM_REG_PC));
+    TEST_CHECK(log.reads == 1);
+    TEST_MSG("%d reads", log.reads);
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R0) == EXIT_REQUEST_MMIO);
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R4) == 0);
+    OK(uc_close(uc));
+}
+
+/* Inside an IT block the stop waits for the end of the TB. */
+static void test_arm_exit_request_it_block(void)
+{
+    uc_engine *uc;
+    EXIT_REQUEST_LOG log = {0, 0, 1};
+    /* adds r3, #1; cmp r3, r3; itt eq; ldreq r1, [r0]; addeq r2, #1;
+       adds r4, #1; nop */
+    char code[] = "\x01\x33\x9b\x42\x04\xbf\x01\x68\x01\x32\x01\x34\x00\xbf";
+    uint64_t end = code_start + sizeof(code) - 1;
+
+    uc = exit_request_open(code, sizeof(code) - 1, &log);
+    OK(uc_emu_start(uc, code_start | 1, end, 0, 0));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_PC) == end);
+    TEST_MSG("pc 0x%x", exit_request_reg(uc, UC_ARM_REG_PC));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R1) == 0xabcd);
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R2) == 1);
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R4) == 1);
+    TEST_CHECK(log.reads == 1);
+    OK(uc_close(uc));
+}
+
+/*
+ * The stop requested by the MMIO store inside the IT block is taken at the
+ * next access, a load from a RAM page already in the TLB.
+ */
+static void test_arm_exit_request_fast_path(void)
+{
+    uc_engine *uc;
+    EXIT_REQUEST_LOG log = {0, 0, 1};
+    uint32_t ram = code_start + 0x2000;
+    uint32_t word = 0x77;
+    /* ldr r4, [r5]; cmp r3, r3; itt eq; streq r1, [r0]; addeq r2, #1;
+       ldr r4, [r5]; adds r6, #1; nop */
+    char code[] =
+        "\x2c\x68\x9b\x42\x04\xbf\x01\x60\x01\x32\x2c\x68\x01\x36\x00\xbf";
+    uint64_t end = code_start + sizeof(code) - 1;
+
+    uc = exit_request_open(code, sizeof(code) - 1, &log);
+    OK(uc_mem_write(uc, ram, &word, sizeof(word)));
+    OK(uc_reg_write(uc, UC_ARM_REG_R5, &ram));
+    OK(uc_emu_start(uc, code_start | 1, end, 0, 0));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_PC) == code_start + 10);
+    TEST_MSG("pc 0x%x", exit_request_reg(uc, UC_ARM_REG_PC));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R2) == 1);
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R6) == 0);
+    TEST_CHECK(log.writes == 1);
+
+    OK(uc_emu_start(uc, code_start + 11, end, 0, 0));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_PC) == end);
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R4) == 0x77);
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R6) == 1);
+    TEST_CHECK(log.writes == 1);
+    OK(uc_close(uc));
+}
+
+/* A pc written by the callback before the stop is kept. */
+static void test_arm_exit_request_pc_write(void)
+{
+    uc_engine *uc;
+    EXIT_REQUEST_LOG log = {0, 0, 1, code_start + 6};
+    /* adds r3, #1; ldr r1, [r0]; adds r2, #1; adds r4, #1; nop */
+    char code[] = "\x01\x33\x01\x68\x01\x32\x01\x34\x00\xbf";
+    uint64_t end = code_start + sizeof(code) - 1;
+
+    uc = exit_request_open(code, sizeof(code) - 1, &log);
+    OK(uc_emu_start(uc, code_start | 1, end, 0, 0));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_PC) == code_start + 6);
+    TEST_MSG("pc 0x%x", exit_request_reg(uc, UC_ARM_REG_PC));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R2) == 0);
+
+    OK(uc_emu_start(uc, code_start + 7, end, 0, 0));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_PC) == end);
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R2) == 0);
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R4) == 1);
+    TEST_CHECK(log.reads == 1);
+    OK(uc_close(uc));
+}
+
+/* A 64-bit load stops like a 32-bit one. */
+static void test_arm_exit_request_vldr(void)
+{
+    uc_engine *uc;
+    EXIT_REQUEST_LOG log = {0, 0, 1};
+    uint32_t cpacr = 0x00f00000;
+    /* adds r3, #1; vldr d0, [r0]; adds r2, #1; nop */
+    char code[] = "\x01\x33\x90\xed\x00\x0b\x01\x32\x00\xbf";
+    uint64_t end = code_start + sizeof(code) - 1;
+
+    uc = exit_request_open(code, sizeof(code) - 1, &log);
+    OK(uc_reg_write(uc, UC_ARM_REG_CPACR_S, &cpacr));
+    OK(uc_emu_start(uc, code_start | 1, end, 0, 0));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_PC) == code_start + 2);
+    TEST_MSG("pc 0x%x", exit_request_reg(uc, UC_ARM_REG_PC));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R3) == 1);
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R2) == 0);
+    TEST_CHECK(log.reads >= 1);
+
+    log.stop_on = 0;
+    OK(uc_emu_start(uc, code_start + 3, end, 0, 0));
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_PC) == end);
+    TEST_CHECK(exit_request_reg(uc, UC_ARM_REG_R2) == 1);
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
@@ -6165,4 +6402,12 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
               test_arm_mem_hook_pc_after_intr_pc_write},
              {"test_arm_mem_hook_pc_after_invalid_insn_pc_write",
               test_arm_mem_hook_pc_after_invalid_insn_pc_write},
+             {"test_arm_exit_request_load", test_arm_exit_request_load},
+             {"test_arm_exit_request_store", test_arm_exit_request_store},
+             {"test_arm_exit_request_ldm", test_arm_exit_request_ldm},
+             {"test_arm_exit_request_it_block", test_arm_exit_request_it_block},
+             {"test_arm_exit_request_fast_path",
+              test_arm_exit_request_fast_path},
+             {"test_arm_exit_request_pc_write", test_arm_exit_request_pc_write},
+             {"test_arm_exit_request_vldr", test_arm_exit_request_vldr},
              {NULL, NULL}};

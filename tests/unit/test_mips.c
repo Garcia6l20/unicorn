@@ -222,6 +222,43 @@ static void test_mips_simple_coredump_2137(void)
     OK(uc_close(uc));
 }
 
+static uint64_t test_mips_exit_request_read(uc_engine *uc, uint64_t offset,
+                                            unsigned size, void *user_data)
+{
+    OK(uc_emu_stop(uc));
+    return 0xabcd;
+}
+
+/* A stop from an MMIO read in a branch delay slot waits for the branch. */
+static void test_mips_exit_request_delay_slot(void)
+{
+    uc_engine *uc;
+    int r_t0 = 0x40000000;
+    int r_t1 = 0x55, r_t2 = 0, r_t3 = 0, pc;
+    /* beq $zero, $zero, 12; lw $t1, 0($t0); addiu $t2, $t2, 1;
+       addiu $t3, $t3, 1 */
+    char code[] = "\x02\x00\x00\x10\x00\x00\x09\x8d\x01\x00\x4a\x25\x01\x00"
+                  "\x6b\x25";
+
+    uc_common_setup(&uc, UC_ARCH_MIPS, UC_MODE_MIPS32 | UC_MODE_LITTLE_ENDIAN,
+                    code, sizeof(code) - 1);
+    OK(uc_mmio_map(uc, 0x40000000, 0x1000, test_mips_exit_request_read, NULL,
+                   NULL, NULL));
+    OK(uc_reg_write(uc, UC_MIPS_REG_T0, &r_t0));
+    OK(uc_reg_write(uc, UC_MIPS_REG_T1, &r_t1));
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1, 0, 0));
+    OK(uc_reg_read(uc, UC_MIPS_REG_PC, &pc));
+    OK(uc_reg_read(uc, UC_MIPS_REG_T1, &r_t1));
+    OK(uc_reg_read(uc, UC_MIPS_REG_T2, &r_t2));
+    OK(uc_reg_read(uc, UC_MIPS_REG_T3, &r_t3));
+    TEST_MSG("pc 0x%x t1 0x%x t2 %d t3 %d", pc, r_t1, r_t2, r_t3);
+    TEST_CHECK(pc == code_start + 12);
+    TEST_CHECK(r_t1 == 0xabcd);
+    TEST_CHECK(r_t2 == 0);
+    TEST_CHECK(r_t3 == 0);
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {
     {"test_mips_stop_at_branch", test_mips_stop_at_branch},
     {"test_mips_stop_at_delay_slot", test_mips_stop_at_delay_slot},
@@ -234,4 +271,5 @@ TEST_LIST = {
      test_mips_stop_delay_slot_from_qiling},
      {"test_mips_simple_coredump_2134", test_mips_simple_coredump_2134},
      {"test_mips_simple_coredump_2137", test_mips_simple_coredump_2137},
+    {"test_mips_exit_request_delay_slot", test_mips_exit_request_delay_slot},
     {NULL, NULL}};

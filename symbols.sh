@@ -590,6 +590,7 @@ tcg_gen_exit_tb \
 tcg_gen_goto_tb \
 tcg_gen_lookup_and_goto_ptr \
 check_exit_request \
+uc_exit_request_ra \
 tcg_gen_qemu_ld_i32 \
 tcg_gen_qemu_st_i32 \
 tcg_gen_qemu_ld_i64 \
