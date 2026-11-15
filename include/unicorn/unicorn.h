@@ -1007,7 +1007,9 @@ typedef struct uc_tb_budget {
     int64_t budget;
     /**
      * The last block started: its address in the low 32 bits, its
-     * instruction count in the high 32 bits.
+     * instruction count in the high 32 bits. A block stores it after its
+     * hooks ran, so a UC_HOOK_BLOCK or UC_HOOK_BLOCK_ICOUNT callback reads
+     * the previous block here, not the block it is called for.
      */
     uint64_t cur_block;
     /** 1 while an exit is requested, else 0, accessed atomically. */
