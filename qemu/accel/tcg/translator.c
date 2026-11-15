@@ -76,7 +76,7 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
      * Only hook this block if it is not broken from previous translation due to
      * full translation cache
      */
-    if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_BLOCK, tb->pc)) {
+    if (!uc->tb_budget && HOOK_EXISTS_BOUNDED(uc, UC_HOOK_BLOCK, tb->pc)) {
         ops->pc_sync(db, cpu);
         prev_op = tcg_last_op(tcg_ctx);
         block_hook = true;
@@ -85,7 +85,15 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
 
     if (uc->tb_budget) {
         budget = true;
-        gen_tb_start_budget(tcg_ctx, db->tb);
+        gen_tb_budget_test(tcg_ctx);
+        if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_BLOCK, tb->pc)) {
+            ops->pc_sync(db, cpu);
+            prev_op = tcg_last_op(tcg_ctx);
+            block_hook = true;
+            gen_uc_tracecode(tcg_ctx, 0xf8f8f8f8, UC_HOOK_BLOCK_IDX, uc,
+                             db->pc_first);
+            gen_tb_budget_retest(tcg_ctx);
+        }
         if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_BLOCK_ICOUNT, tb->pc)) {
             TCGLabel *skip = gen_tb_budget_hook_begin(tcg_ctx);
             ops->pc_sync(db, cpu);
@@ -95,6 +103,7 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
                              db->pc_first);
             gen_tb_budget_hook_end(tcg_ctx, skip);
         }
+        gen_tb_budget_charge(tcg_ctx, db->tb);
     } else if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_BLOCK_ICOUNT, tb->pc)) {
         ops->pc_sync(db, cpu);
         prev_op = tcg_last_op(tcg_ctx);

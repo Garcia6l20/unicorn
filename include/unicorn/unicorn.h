@@ -941,17 +941,22 @@ typedef enum uc_control_type {
      * Instruction budget mode. Write: enable or disable it. Translated code
      * then tests, at the start of every block, a pending stop, a pending
      * UC_CTL_UC_REQUEST_EXIT and the budget of the uc_tb_budget state, and
-     * ends the run before the block when one of them holds. A block that
-     * runs subtracts its instruction count from the budget first, the count
-     * UC_HOOK_BLOCK_ICOUNT reports, and stores its address and count in
-     * cur_block. The UC_HOOK_BLOCK_ICOUNT callback runs only while hook_live
+     * ends the run before the block when one of them holds. A block refused
+     * this way calls no hook. A block that passes calls its UC_HOOK_BLOCK
+     * callback, and its UC_HOOK_BLOCK_ICOUNT callback only while hook_live
      * is not 0, read at each block start, so it is turned on and off with no
-     * flush. A one-instruction block whose direct branch to itself is taken,
-     * with no UC_HOOK_CODE and no UC_HOOK_BLOCK on it, consumes the whole
-     * budget at once while no UC_HOOK_BLOCK_ICOUNT callback is live for it:
-     * the count equals running it until the budget is spent. Enabling resets the state to budget INT64_MAX, hook_live 1 and
-     * no request. Changing the mode flushes all translation blocks. Not
-     * during uc_emu_start. UC_ARCH_ARM only, UC_ERR_ARG on other
+     * flush. A uc_emu_stop from either callback ends the run before the
+     * block. A block that runs then subtracts its instruction count from the
+     * budget, the count UC_HOOK_BLOCK_ICOUNT reports, and stores its address
+     * and count in cur_block, so the budget consumed equals the instructions
+     * of the blocks run. A one-instruction block whose direct branch to
+     * itself is taken, with no UC_HOOK_CODE and no UC_HOOK_BLOCK on it,
+     * consumes the whole budget at once while no UC_HOOK_BLOCK_ICOUNT
+     * callback is live for it: the count equals running it until the budget
+     * is spent, so with INT64_MAX it ends the run at once. Arm a budget to
+     * bound such a loop. Enabling resets the state to budget INT64_MAX,
+     * hook_live 1 and no request. Changing the mode flushes all translation
+     * blocks. Not during uc_emu_start. UC_ARCH_ARM only, UC_ERR_ARG on other
      * architectures and from a callback.
      * Read: the state of this engine, a pointer valid until uc_close. Its
      * fields are read and written by the thread running uc_emu_start, while
@@ -967,8 +972,11 @@ typedef enum uc_control_type {
      * of a block. The request stays set until a block start takes it, across
      * uc_emu_start calls, or until the thread running uc_emu_start clears
      * async_exit with an atomic store. The only control callable from a
-     * thread other than the one running uc_emu_start. UC_ERR_ARG when budget
-     * mode is off or the engine is not initialized, and for a read.
+     * thread other than the one running uc_emu_start. A uc_emu_start nested
+     * in a callback shares the request and the state: its first block start
+     * takes a pending request, and the outer run then continues. UC_ERR_ARG
+     * when budget mode is off or the engine is not initialized, and for a
+     * read.
      * Write: @args = () */
     UC_CTL_UC_REQUEST_EXIT,
 } uc_control_type;
@@ -992,7 +1000,10 @@ typedef enum uc_tb_exit {
  * Budget mode state, see UC_CTL_UC_TB_BUDGET.
  */
 typedef struct uc_tb_budget {
-    /** Instructions left. A block starts only while it is above 0. */
+    /**
+     * Instructions left. A block starts only while it is above 0. Values
+     * above INT64_MIN only.
+     */
     int64_t budget;
     /**
      * The last block started: its address in the low 32 bits, its
@@ -1003,7 +1014,10 @@ typedef struct uc_tb_budget {
     int32_t async_exit;
     /** Not 0 while the UC_HOOK_BLOCK_ICOUNT callback runs. */
     int32_t hook_live;
-    /** A uc_tb_exit, reset by each uc_emu_start. */
+    /**
+     * A uc_tb_exit, reset by each uc_emu_start. A nested uc_emu_start
+     * restores the outer run's value when it returns.
+     */
     int32_t exit_cause;
     int32_t reserved;
 } uc_tb_budget;

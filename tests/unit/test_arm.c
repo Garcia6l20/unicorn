@@ -5362,11 +5362,14 @@ static void test_arm_tb_budget_counts(void)
         TEST_CHECK(run.addr[i] == ref.addr[i]);
         TEST_CHECK(run.size[i] == ref.size[i]);
         TEST_CHECK(run.cur_block[i] ==
-                   ((uint32_t)run.addr[i] | ((uint64_t)run.size[i] << 32)));
+                   (i == 0 ? 0
+                           : ((uint32_t)run.addr[i - 1] |
+                              ((uint64_t)run.size[i - 1] << 32))));
         sum += run.size[i];
     }
     TEST_CHECK(sum == 32);
     TEST_CHECK(INT64_MAX - state->budget == sum);
+    TEST_CHECK(state->cur_block == (0x1008 | (UINT64_C(1) << 32)));
     TEST_CHECK(state->exit_cause == UC_TB_EXIT_NONE);
     OK(uc_close(uc));
 }
@@ -5479,7 +5482,7 @@ static void test_arm_tb_budget_hook_live(void)
     TEST_CHECK(tb_budget_pc(uc) == 0x1002);
     OK(uc_reg_read(uc, UC_ARM_REG_R0, &r0));
     TEST_CHECK(r0 == 3);
-    TEST_CHECK(100 - state->budget == 4 + 3 * 3);
+    TEST_CHECK(100 - state->budget == 4 + 3 * 2);
     TEST_CHECK(state->exit_cause == UC_TB_EXIT_NONE);
 
     OK(uc_ctl_tb_flushes(uc, &flushes_after));
@@ -5524,7 +5527,7 @@ static void test_arm_tb_budget_self_branch(void)
         } else if (leg == 2) {
             TEST_CHECK(run.count == 1 + 98);
         } else if (leg == 4) {
-            TEST_CHECK(run.count == 1 + 98 + 1);
+            TEST_CHECK(run.count == 1 + 98);
         } else if (leg == 3) {
             TEST_CHECK(run.count == 0);
         }
@@ -5565,6 +5568,133 @@ static void test_arm_tb_budget_two_insn_loop(void)
     TEST_CHECK(r0 == 50);
     TEST_CHECK(state->budget == 0);
     TEST_CHECK(tb_budget_pc(uc) == code_start);
+    OK(uc_close(uc));
+}
+
+static void test_arm_tb_budget_block_hook(void)
+{
+    TB_BUDGET_LOG run = {0};
+    uc_tb_budget *state;
+    uc_hook hook;
+    uint32_t pc = code_start;
+    uint32_t r0;
+    int64_t consumed = 0;
+    int runs = 0;
+
+    uc_engine *uc =
+        tb_budget_open(tb_budget_loop, sizeof(tb_budget_loop) - 1, &state);
+    OK(uc_hook_add(uc, &hook, UC_HOOK_BLOCK, tb_budget_block, &run, 1, 0));
+    while (pc != tb_budget_loop_end && runs < 100) {
+        state->budget = 5;
+        OK(uc_emu_start(uc, pc | 1, tb_budget_loop_end, 0, 0));
+        pc = tb_budget_pc(uc);
+        consumed += 5 - state->budget;
+        runs++;
+    }
+    TEST_CHECK(runs == 6);
+    TEST_CHECK(consumed == 32);
+    TEST_CHECK(run.count == 11);
+
+    run.count = 0;
+    run.stop_at = 4;
+    state->budget = 100;
+    OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+    TEST_CHECK(run.count == 4);
+    TEST_CHECK(tb_budget_pc(uc) == 0x1002);
+    OK(uc_reg_read(uc, UC_ARM_REG_R0, &r0));
+    TEST_CHECK(r0 == 3);
+    TEST_CHECK(100 - state->budget == 4 + 3 * 2);
+    OK(uc_close(uc));
+}
+
+static void test_arm_tb_budget_hook_stop_resume(void)
+{
+    TB_BUDGET_LOG run = {0};
+    uc_tb_budget *state;
+    uc_hook hook;
+    uint32_t r0;
+    int64_t consumed;
+
+    uc_engine *uc =
+        tb_budget_open(tb_budget_loop, sizeof(tb_budget_loop) - 1, &state);
+    run.state = state;
+    run.stop_at = 4;
+    OK(uc_hook_add(uc, &hook, UC_HOOK_BLOCK_ICOUNT, tb_budget_block, &run, 1,
+                   0));
+    state->budget = 100;
+    OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+    TEST_CHECK(tb_budget_pc(uc) == 0x1002);
+    consumed = 100 - state->budget;
+    TEST_CHECK(consumed == 10);
+    state->budget = 100;
+    OK(uc_emu_start(uc, 0x1002 | 1, tb_budget_loop_end, 0, 0));
+    consumed += 100 - state->budget;
+    OK(uc_reg_read(uc, UC_ARM_REG_R0, &r0));
+    TEST_CHECK(r0 == 10);
+    TEST_CHECK(tb_budget_pc(uc) == tb_budget_loop_end);
+    TEST_CHECK(consumed == 32);
+    TEST_CHECK(run.count == 11 + 1);
+    OK(uc_close(uc));
+}
+
+static void test_arm_tb_budget_self_branch_unarmed(void)
+{
+    char code[] = "\x01\x20\xfe\xe7\x00\xbf";
+    uc_tb_budget *state;
+
+    uc_engine *uc = tb_budget_open(code, sizeof(code) - 1, &state);
+    state->hook_live = 0;
+    OK(uc_emu_start(uc, code_start | 1, 0x2000, 200000, 0));
+    TEST_CHECK(tb_budget_pc(uc) == 0x1002);
+    TEST_CHECK(state->budget == 0);
+    TEST_CHECK(state->exit_cause == UC_TB_EXIT_BUDGET);
+    OK(uc_close(uc));
+}
+
+typedef struct _TB_BUDGET_NESTED {
+    uc_tb_budget *state;
+    int calls;
+    uint32_t inner_pc;
+    int32_t cause_after_inner;
+    int32_t async_after_inner;
+} TB_BUDGET_NESTED;
+
+static void tb_budget_nested_block(uc_engine *uc, uint64_t address,
+                                   uint32_t size, void *user_data)
+{
+    TB_BUDGET_NESTED *n = user_data;
+
+    if (n->calls++ != 0) {
+        return;
+    }
+    OK(uc_ctl_request_exit(uc));
+    OK(uc_emu_start(uc, 0x1100 | 1, 0x1104, 0, 0));
+    n->inner_pc = tb_budget_pc(uc);
+    n->cause_after_inner = n->state->exit_cause;
+    n->async_after_inner = n->state->async_exit;
+}
+
+static void test_arm_tb_budget_nested_takes_request(void)
+{
+    TB_BUDGET_NESTED n = {0};
+    uc_tb_budget *state;
+    uc_hook hook;
+    uint32_t r0;
+
+    uc_engine *uc =
+        tb_budget_open(tb_budget_loop, sizeof(tb_budget_loop) - 1, &state);
+    OK(uc_mem_write(uc, 0x1100, "\x00\xbf\x00\xbf\x00\xbf", 6));
+    n.state = state;
+    OK(uc_hook_add(uc, &hook, UC_HOOK_BLOCK_ICOUNT, tb_budget_nested_block, &n,
+                   1, 0));
+    OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+    TEST_CHECK(n.inner_pc == 0x1100);
+    TEST_CHECK(n.cause_after_inner == UC_TB_EXIT_NONE);
+    TEST_CHECK(n.async_after_inner == 0);
+    OK(uc_reg_read(uc, UC_ARM_REG_R0, &r0));
+    TEST_CHECK(r0 == 10);
+    TEST_CHECK(tb_budget_pc(uc) == tb_budget_loop_end);
+    TEST_CHECK(state->exit_cause == UC_TB_EXIT_NONE);
     OK(uc_close(uc));
 }
 
@@ -5931,6 +6061,13 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
               test_arm_tb_budget_self_branch_not_taken},
              {"test_arm_tb_budget_two_insn_loop",
               test_arm_tb_budget_two_insn_loop},
+             {"test_arm_tb_budget_block_hook", test_arm_tb_budget_block_hook},
+             {"test_arm_tb_budget_hook_stop_resume",
+              test_arm_tb_budget_hook_stop_resume},
+             {"test_arm_tb_budget_self_branch_unarmed",
+              test_arm_tb_budget_self_branch_unarmed},
+             {"test_arm_tb_budget_nested_takes_request",
+              test_arm_tb_budget_nested_takes_request},
 #if !defined(_WIN32)
              {"test_arm_tb_budget_request_exit_thread",
               test_arm_tb_budget_request_exit_thread},

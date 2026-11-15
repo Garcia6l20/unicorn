@@ -48,16 +48,12 @@ static inline void gen_tb_start(TCGContext *tcg_ctx, TranslationBlock *tb)
 #define UC_TB_BUDGET_OFS(field)                                                \
     ((int)offsetof(ArchCPU, neg.uc_budget.field) - (int)offsetof(ArchCPU, env))
 
-static inline void gen_tb_start_budget(TCGContext *tcg_ctx,
-                                       TranslationBlock *tb)
+static inline void gen_tb_budget_test(TCGContext *tcg_ctx)
 {
     TCGv_i32 exit32 = tcg_temp_new_i32(tcg_ctx);
     TCGv_i32 async = tcg_temp_new_i32(tcg_ctx);
     TCGv_i64 exit64 = tcg_temp_new_i64(tcg_ctx);
     TCGv_i64 budget = tcg_temp_new_i64(tcg_ctx);
-    TCGv_i32 count32;
-    TCGv_i64 count;
-    TCGv_i64 block;
 
     tcg_ctx->uc_budget_exit = gen_new_label(tcg_ctx);
     tcg_gen_ld_i32(tcg_ctx, exit32, tcg_ctx->cpu_env,
@@ -77,11 +73,27 @@ static inline void gen_tb_start_budget(TCGContext *tcg_ctx,
     tcg_temp_free_i64(tcg_ctx, exit64);
     tcg_temp_free_i32(tcg_ctx, async);
     tcg_temp_free_i32(tcg_ctx, exit32);
+}
 
-    budget = tcg_temp_new_i64(tcg_ctx);
-    count = tcg_temp_new_i64(tcg_ctx);
-    block = tcg_temp_new_i64(tcg_ctx);
-    count32 = tcg_const_i32(tcg_ctx, 0);
+static inline void gen_tb_budget_retest(TCGContext *tcg_ctx)
+{
+    TCGv_i32 decr = tcg_temp_new_i32(tcg_ctx);
+
+    tcg_gen_ld_i32(tcg_ctx, decr, tcg_ctx->cpu_env,
+                   offsetof(ArchCPU, neg.icount_decr.u32) -
+                       offsetof(ArchCPU, env));
+    tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_LT, decr, 0, tcg_ctx->uc_budget_exit);
+    tcg_temp_free_i32(tcg_ctx, decr);
+}
+
+static inline void gen_tb_budget_charge(TCGContext *tcg_ctx,
+                                        TranslationBlock *tb)
+{
+    TCGv_i64 budget = tcg_temp_new_i64(tcg_ctx);
+    TCGv_i64 count = tcg_temp_new_i64(tcg_ctx);
+    TCGv_i64 block = tcg_temp_new_i64(tcg_ctx);
+    TCGv_i32 count32 = tcg_const_i32(tcg_ctx, 0);
+
     tcg_ctx->uc_budget_count_op = tcg_last_op(tcg_ctx);
     tcg_gen_extu_i32_i64(tcg_ctx, count, count32);
     tcg_gen_ld_i64(tcg_ctx, budget, tcg_ctx->cpu_env, UC_TB_BUDGET_OFS(budget));
@@ -111,13 +123,7 @@ static inline TCGLabel *gen_tb_budget_hook_begin(TCGContext *tcg_ctx)
 
 static inline void gen_tb_budget_hook_end(TCGContext *tcg_ctx, TCGLabel *skip)
 {
-    TCGv_i32 decr = tcg_temp_new_i32(tcg_ctx);
-
-    tcg_gen_ld_i32(tcg_ctx, decr, tcg_ctx->cpu_env,
-                   offsetof(ArchCPU, neg.icount_decr.u32) -
-                       offsetof(ArchCPU, env));
-    tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_LT, decr, 0, tcg_ctx->uc_budget_exit);
-    tcg_temp_free_i32(tcg_ctx, decr);
+    gen_tb_budget_retest(tcg_ctx);
     gen_set_label(tcg_ctx, skip);
 }
 
