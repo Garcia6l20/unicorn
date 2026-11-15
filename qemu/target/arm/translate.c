@@ -10568,8 +10568,24 @@ static bool trans_LDM_t16(DisasContext *s, arg_ldst_block *a)
  * Branch, branch with link
  */
 
+static void gen_uc_tb_budget_self_branch(DisasContext *s, uint32_t dest)
+{
+    struct uc_struct *uc = s->uc;
+    TCGContext *tcg_ctx = uc->tcg_ctx;
+
+    if (tcg_ctx->uc_budget_exit == NULL || dest != s->base.pc_first ||
+        s->base.num_insns != 1 ||
+        HOOK_EXISTS_BOUNDED(uc, UC_HOOK_CODE, s->base.pc_first) ||
+        HOOK_EXISTS_BOUNDED(uc, UC_HOOK_BLOCK, s->base.pc_first)) {
+        return;
+    }
+    gen_tb_budget_consume(tcg_ctx, HOOK_EXISTS_BOUNDED(uc, UC_HOOK_BLOCK_ICOUNT,
+                                                       s->base.pc_first));
+}
+
 static bool trans_B(DisasContext *s, arg_i *a)
 {
+    gen_uc_tb_budget_self_branch(s, read_pc(s) + a->imm);
     gen_jmp(s, read_pc(s) + a->imm);
     return true;
 }

@@ -674,6 +674,9 @@ struct TCGContext {
 
     TCGv_i32 delay_slot_flag;
     bool uc_insn_mem_access;
+    TCGLabel *uc_budget_exit;
+    TCGOp *uc_budget_count_op;
+    TCGOp *uc_budget_block_op;
 
     TCGTempSet free_temps[TCG_TYPE_COUNT * 2];
     TCGTemp temps[TCG_MAX_TEMPS]; /* globals first, temps after */

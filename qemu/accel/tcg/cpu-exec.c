@@ -75,7 +75,7 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
          * of the start of the TB.
          */
         CPUClass *cc = CPU_GET_CLASS(cpu);
-        if (!HOOK_EXISTS(env->uc, UC_HOOK_CODE)) {
+        if (!HOOK_EXISTS(env->uc, UC_HOOK_CODE) || env->uc->tb_budget) {
             // We should sync pc for R/W error.
             switch (env->uc->invalid_error) {
                 case UC_ERR_WRITE_PROT:
@@ -535,6 +535,19 @@ static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
          * cpu_handle_interrupt.  cpu_handle_interrupt will also
          * clear cpu->icount_decr.u16.high.
          */
+        return;
+    }
+
+    if (cpu->uc->tb_budget) {
+        UcTbBudget *budget = cpu->uc_budget_ptr;
+
+        if (atomic_xchg(&budget->async_exit, 0)) {
+            budget->exit_cause = UC_TB_EXIT_ASYNC;
+        } else if (budget->budget <= 0) {
+            budget->exit_cause = UC_TB_EXIT_BUDGET;
+        }
+        cpu->uc->stop_request = true;
+        cpu->exit_request = 1;
         return;
     }
 

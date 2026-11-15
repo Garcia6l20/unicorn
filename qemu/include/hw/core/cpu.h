@@ -159,6 +159,15 @@ typedef union IcountDecr {
     } u16;
 } IcountDecr;
 
+typedef struct UcTbBudget {
+    int64_t budget;
+    uint64_t cur_block;
+    int32_t async_exit;
+    int32_t hook_live;
+    int32_t exit_cause;
+    int32_t reserved;
+} UcTbBudget;
+
 typedef struct CPUBreakpoint {
     vaddr pc;
     int flags; /* BP_* */
@@ -285,6 +294,7 @@ struct CPUState {
 
     void *env_ptr; /* CPUArchState */
     IcountDecr *icount_decr_ptr;
+    UcTbBudget *uc_budget_ptr;
 
     /* Accessed in parallel; all accesses must be atomic */
     struct TranslationBlock *tb_jmp_cache[TB_JMP_CACHE_SIZE];

@@ -383,6 +383,7 @@ static inline void cpu_set_cpustate_pointers(ArchCPU *cpu)
 {
     cpu->parent_obj.env_ptr = &cpu->env;
     cpu->parent_obj.icount_decr_ptr = &cpu->neg.icount_decr;
+    cpu->parent_obj.uc_budget_ptr = &cpu->neg.uc_budget;
 }
 
 /**

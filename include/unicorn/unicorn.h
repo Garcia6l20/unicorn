@@ -937,7 +937,76 @@ typedef enum uc_control_type {
      * uc_ctl_flush_tb. Meant for tests and benches. UC_ERR_ARG for a write.
      * Read: @args = (uint64_t *flushes) */
     UC_CTL_TB_FLUSHES,
+    /**
+     * Instruction budget mode. Write: enable or disable it. Translated code
+     * then tests, at the start of every block, a pending stop, a pending
+     * UC_CTL_UC_REQUEST_EXIT and the budget of the uc_tb_budget state, and
+     * ends the run before the block when one of them holds. A block that
+     * runs subtracts its instruction count from the budget first, the count
+     * UC_HOOK_BLOCK_ICOUNT reports, and stores its address and count in
+     * cur_block. The UC_HOOK_BLOCK_ICOUNT callback runs only while hook_live
+     * is not 0, read at each block start, so it is turned on and off with no
+     * flush. A one-instruction block whose direct branch to itself is taken,
+     * with no UC_HOOK_CODE and no UC_HOOK_BLOCK on it, consumes the whole
+     * budget at once while no UC_HOOK_BLOCK_ICOUNT callback is live for it:
+     * the count equals running it until the budget is spent. Enabling resets the state to budget INT64_MAX, hook_live 1 and
+     * no request. Changing the mode flushes all translation blocks. Not
+     * during uc_emu_start. UC_ARCH_ARM only, UC_ERR_ARG on other
+     * architectures and from a callback.
+     * Read: the state of this engine, a pointer valid until uc_close. Its
+     * fields are read and written by the thread running uc_emu_start, while
+     * the engine is stopped or from a callback, except async_exit, see
+     * UC_CTL_UC_REQUEST_EXIT. Initializes the engine.
+     * Write: @args = (int)
+     * Read: @args = (uc_tb_budget **) */
+    UC_CTL_UC_TB_BUDGET,
+    /**
+     * Request the end of the run from any thread, in budget mode: a release
+     * store of 1 to async_exit. The next block start ends the run with
+     * exit_cause UC_TB_EXIT_ASYNC and clears the request, never in the middle
+     * of a block. The request stays set until a block start takes it, across
+     * uc_emu_start calls, or until the thread running uc_emu_start clears
+     * async_exit with an atomic store. The only control callable from a
+     * thread other than the one running uc_emu_start. UC_ERR_ARG when budget
+     * mode is off or the engine is not initialized, and for a read.
+     * Write: @args = () */
+    UC_CTL_UC_REQUEST_EXIT,
 } uc_control_type;
+
+/**
+ * Why the last uc_emu_start ended, in budget mode, read from
+ * uc_tb_budget.exit_cause.
+ */
+typedef enum uc_tb_exit {
+    /** Any end other than the two below, or budget mode off. */
+    UC_TB_EXIT_NONE = 0,
+    /** A block start found the budget at 0 or below. */
+    UC_TB_EXIT_BUDGET,
+    /**
+     * A block start took a UC_CTL_UC_REQUEST_EXIT request, budget or not.
+     */
+    UC_TB_EXIT_ASYNC,
+} uc_tb_exit;
+
+/**
+ * Budget mode state, see UC_CTL_UC_TB_BUDGET.
+ */
+typedef struct uc_tb_budget {
+    /** Instructions left. A block starts only while it is above 0. */
+    int64_t budget;
+    /**
+     * The last block started: its address in the low 32 bits, its
+     * instruction count in the high 32 bits.
+     */
+    uint64_t cur_block;
+    /** 1 while an exit is requested, else 0, accessed atomically. */
+    int32_t async_exit;
+    /** Not 0 while the UC_HOOK_BLOCK_ICOUNT callback runs. */
+    int32_t hook_live;
+    /** A uc_tb_exit, reset by each uc_emu_start. */
+    int32_t exit_cause;
+    int32_t reserved;
+} uc_tb_budget;
 
 /*
 
@@ -1048,6 +1117,14 @@ See sample_ctl.c for a detailed example.
     uc_ctl(uc, UC_CTL_READ(UC_CTL_TB_TRANSLATIONS, 2), (translations), (live))
 #define uc_ctl_tb_flushes(uc, flushes)                                         \
     uc_ctl(uc, UC_CTL_READ(UC_CTL_TB_FLUSHES, 1), (flushes))
+#define uc_ctl_tb_budget_enable(uc)                                            \
+    uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_TB_BUDGET, 1), 1)
+#define uc_ctl_tb_budget_disable(uc)                                           \
+    uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_TB_BUDGET, 1), 0)
+#define uc_ctl_tb_budget_state(uc, ptr)                                        \
+    uc_ctl(uc, UC_CTL_READ(UC_CTL_UC_TB_BUDGET, 1), (ptr))
+#define uc_ctl_request_exit(uc)                                                \
+    uc_ctl(uc, UC_CTL_WRITE(UC_CTL_UC_REQUEST_EXIT, 0))
 #define uc_ctl_arm_idau(uc, cb, user)                                          \
     uc_ctl(uc, UC_CTL_WRITE(UC_CTL_ARM_IDAU, 2), (uc_arm_idau_cb)(cb),         \
            (void *)(user))

@@ -40,6 +40,7 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
     TCGContext *tcg_ctx = uc->tcg_ctx;
     TCGOp *prev_op = NULL;
     bool block_hook = false;
+    bool budget = false;
     int exit_insn = 0;
 
     /* Initialize DisasContext */
@@ -56,6 +57,7 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
 
     /* Reset the temp count so that we can identify leaks */
     tcg_clear_temp_count();
+    tcg_ctx->uc_budget_exit = NULL;
 
     /* Unicorn: early check to see if the address of this block is
      * the "run until" address. */
@@ -81,7 +83,19 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
         gen_uc_tracecode(tcg_ctx, 0xf8f8f8f8, UC_HOOK_BLOCK_IDX, uc, db->pc_first);
     }
 
-    if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_BLOCK_ICOUNT, tb->pc)) {
+    if (uc->tb_budget) {
+        budget = true;
+        gen_tb_start_budget(tcg_ctx, db->tb);
+        if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_BLOCK_ICOUNT, tb->pc)) {
+            TCGLabel *skip = gen_tb_budget_hook_begin(tcg_ctx);
+            ops->pc_sync(db, cpu);
+            prev_op = tcg_last_op(tcg_ctx);
+            block_hook = true;
+            gen_uc_tracecode(tcg_ctx, 0xf8f8f8f9, UC_HOOK_BLOCK_ICOUNT_IDX, uc,
+                             db->pc_first);
+            gen_tb_budget_hook_end(tcg_ctx, skip);
+        }
+    } else if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_BLOCK_ICOUNT, tb->pc)) {
         ops->pc_sync(db, cpu);
         prev_op = tcg_last_op(tcg_ctx);
         block_hook = true;
@@ -91,7 +105,9 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
     // tcg_dump_ops(tcg_ctx, false, "translator loop");
 
     /* Start translating.  */
-    gen_tb_start(tcg_ctx, db->tb);
+    if (!budget) {
+        gen_tb_start(tcg_ctx, db->tb);
+    }
     // tcg_dump_ops(tcg_ctx, false, "tb start");
 
     ops->tb_start(db, cpu);
@@ -161,6 +177,10 @@ _end_loop:
     db->tb->icount = db->num_insns;
 
     hooked_regions_check(uc, db->tb->pc, db->tb->size);
+
+    if (budget) {
+        tcg_ctx->uc_budget_count_op->args[1] = db->tb->icount - exit_insn;
+    }
 
     if (block_hook) {
         TCGOp *tcg_op;

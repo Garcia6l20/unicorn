@@ -273,6 +273,29 @@ static gint uc_exits_cmp(gconstpointer a, gconstpointer b, gpointer user_data)
     }
 }
 
+QEMU_BUILD_BUG_ON(sizeof(UcTbBudget) != sizeof(uc_tb_budget));
+QEMU_BUILD_BUG_ON(offsetof(UcTbBudget, budget) !=
+                  offsetof(uc_tb_budget, budget));
+QEMU_BUILD_BUG_ON(offsetof(UcTbBudget, cur_block) !=
+                  offsetof(uc_tb_budget, cur_block));
+QEMU_BUILD_BUG_ON(offsetof(UcTbBudget, async_exit) !=
+                  offsetof(uc_tb_budget, async_exit));
+QEMU_BUILD_BUG_ON(offsetof(UcTbBudget, hook_live) !=
+                  offsetof(uc_tb_budget, hook_live));
+QEMU_BUILD_BUG_ON(offsetof(UcTbBudget, exit_cause) !=
+                  offsetof(uc_tb_budget, exit_cause));
+
+static void uc_tb_budget_reset(uc_engine *uc)
+{
+    UcTbBudget *budget = uc->cpu->uc_budget_ptr;
+
+    budget->budget = INT64_MAX;
+    budget->cur_block = 0;
+    budget->hook_live = 1;
+    budget->exit_cause = UC_TB_EXIT_NONE;
+    atomic_set(&budget->async_exit, 0);
+}
+
 static uc_err uc_init_engine(uc_engine *uc)
 {
     if (uc->init_done) {
@@ -306,6 +329,8 @@ static uc_err uc_init_engine(uc_engine *uc)
     uc->context_content = UC_CTL_CONTEXT_CPU;
 
     uc->unmapped_regions = g_array_new(false, false, sizeof(MemoryRegion *));
+
+    uc_tb_budget_reset(uc);
 
     uc->init_done = true;
 
@@ -1135,6 +1160,7 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
     uc_err err;
     bool exit_after_insn;
     uint64_t exit_after_insn_taken;
+    int32_t exit_cause;
 
     // reset the counter
     uc->emu_counter = 0;
@@ -1287,6 +1313,8 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
     exit_after_insn_taken = uc->exit_after_insn_taken;
     uc->exit_after_insn = false;
     uc->exit_after_insn_taken = 0;
+    exit_cause = uc->cpu->uc_budget_ptr->exit_cause;
+    uc->cpu->uc_budget_ptr->exit_cause = UC_TB_EXIT_NONE;
 
     uc->vm_start(uc);
 
@@ -1294,6 +1322,7 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
     if (uc->nested_level > 0) {
         uc->exit_after_insn = exit_after_insn;
         uc->exit_after_insn_taken = exit_after_insn_taken;
+        uc->cpu->uc_budget_ptr->exit_cause = exit_cause;
     }
 
     // emulation is done if and only if we exit the outer uc_emu_start
@@ -3379,6 +3408,42 @@ uc_err uc_ctl(uc_engine *uc, uc_control_type control, ...)
         }
         break;
     }
+
+    case UC_CTL_UC_TB_BUDGET:
+        if (uc->arch != UC_ARCH_ARM) {
+            err = UC_ERR_ARG;
+        } else if (rw == UC_CTL_IO_READ) {
+            UC_INIT(uc);
+            *va_arg(args, uc_tb_budget **) =
+                (uc_tb_budget *)uc->cpu->uc_budget_ptr;
+            restore_jit_state(uc);
+        } else if (rw == UC_CTL_IO_WRITE && uc->nested_level == 0) {
+            bool use = va_arg(args, int) != 0;
+
+            if (use != uc->tb_budget) {
+                uc->tb_budget = use;
+                if (uc->init_done) {
+                    save_jit_state(uc);
+                    uc->tb_flush(uc);
+                    restore_jit_state(uc);
+                }
+            }
+            if (use && uc->init_done) {
+                uc_tb_budget_reset(uc);
+            }
+        } else {
+            err = UC_ERR_ARG;
+        }
+        break;
+
+    case UC_CTL_UC_REQUEST_EXIT:
+        if (rw == UC_CTL_IO_WRITE && uc->arch == UC_ARCH_ARM && uc->tb_budget &&
+            uc->init_done) {
+            atomic_rcu_set(&uc->cpu->uc_budget_ptr->async_exit, 1);
+        } else {
+            err = UC_ERR_ARG;
+        }
+        break;
 
     case UC_CTL_UC_EXIT_AFTER_INSN: {
         if (rw == UC_CTL_IO_READ) {

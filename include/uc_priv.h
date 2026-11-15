@@ -410,6 +410,7 @@ struct uc_struct {
     bool drop_store;
     bool refuse_mmio;
     bool use_exit_after_insn;
+    bool tb_budget;
     bool exit_after_insn;
     uint64_t exit_after_insn_taken;
     uint32_t mem_alias_count;

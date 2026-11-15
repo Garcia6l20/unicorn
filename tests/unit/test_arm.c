@@ -5252,6 +5252,507 @@ static void test_arm_tb_translations(void)
     OK(uc_close(uc));
 }
 
+#include <inttypes.h>
+
+#define TB_BUDGET_LOG_MAX 128
+#define TB_BUDGET_MODE (UC_MODE_THUMB | UC_MODE_MCLASS)
+
+static const char tb_budget_loop[] =
+    "\x00\x20\x01\x30\x0a\x28\xfc\xd1\x00\xbf\x00\xbf";
+static const uint64_t tb_budget_loop_end = 0x100a;
+
+typedef struct _TB_BUDGET_LOG {
+    uc_tb_budget *state;
+    uint64_t addr[TB_BUDGET_LOG_MAX];
+    uint32_t size[TB_BUDGET_LOG_MAX];
+    uint64_t cur_block[TB_BUDGET_LOG_MAX];
+    int count;
+    int live_until;
+    int stop_at;
+    uint64_t code_hits;
+} TB_BUDGET_LOG;
+
+static void tb_budget_block(uc_engine *uc, uint64_t address, uint32_t size,
+                            void *user_data)
+{
+    TB_BUDGET_LOG *log = user_data;
+
+    if (log->count < TB_BUDGET_LOG_MAX) {
+        log->addr[log->count] = address;
+        log->size[log->count] = size;
+        log->cur_block[log->count] =
+            log->state ? log->state->cur_block : UINT64_MAX;
+    }
+    log->count++;
+    if (log->state && log->count == log->live_until) {
+        log->state->hook_live = 0;
+    }
+    if (log->count == log->stop_at) {
+        OK(uc_emu_stop(uc));
+    }
+}
+
+static void tb_budget_code(uc_engine *uc, uint64_t address, uint32_t size,
+                           void *user_data)
+{
+    ((TB_BUDGET_LOG *)user_data)->code_hits++;
+}
+
+static uc_engine *tb_budget_open(const char *code, size_t size,
+                                 uc_tb_budget **state)
+{
+    uc_engine *uc;
+
+    uc_common_setup(&uc, UC_ARCH_ARM, TB_BUDGET_MODE, code, size,
+                    UC_CPU_ARM_CORTEX_M33);
+    OK(uc_ctl_tb_budget_enable(uc));
+    OK(uc_ctl_tb_budget_state(uc, state));
+    return uc;
+}
+
+static uint32_t tb_budget_pc(uc_engine *uc)
+{
+    uint32_t pc;
+
+    OK(uc_reg_read(uc, UC_ARM_REG_PC, &pc));
+    return pc;
+}
+
+static void tb_budget_reference(TB_BUDGET_LOG *ref)
+{
+    uc_engine *uc;
+    uc_hook hook;
+
+    memset(ref, 0, sizeof(*ref));
+    uc_common_setup(&uc, UC_ARCH_ARM, TB_BUDGET_MODE, tb_budget_loop,
+                    sizeof(tb_budget_loop) - 1, UC_CPU_ARM_CORTEX_M33);
+    OK(uc_hook_add(uc, &hook, UC_HOOK_BLOCK_ICOUNT, tb_budget_block, ref, 1,
+                   0));
+    OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+    OK(uc_close(uc));
+}
+
+static void test_arm_tb_budget_counts(void)
+{
+    TB_BUDGET_LOG ref, run = {0};
+    uc_tb_budget *state;
+    uc_hook hook;
+    uint32_t r0;
+    int64_t sum = 0;
+    int i;
+
+    tb_budget_reference(&ref);
+    TEST_CHECK(ref.count == 11);
+    TEST_CHECK(ref.size[0] == 4 && ref.size[1] == 3 && ref.size[10] == 1);
+
+    uc_engine *uc =
+        tb_budget_open(tb_budget_loop, sizeof(tb_budget_loop) - 1, &state);
+    run.state = state;
+    OK(uc_hook_add(uc, &hook, UC_HOOK_BLOCK_ICOUNT, tb_budget_block, &run, 1,
+                   0));
+    TEST_CHECK(state->budget == INT64_MAX);
+    TEST_CHECK(state->hook_live == 1);
+    TEST_CHECK(state->async_exit == 0);
+    OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+    OK(uc_reg_read(uc, UC_ARM_REG_R0, &r0));
+    TEST_CHECK(r0 == 10);
+    TEST_CHECK(tb_budget_pc(uc) == tb_budget_loop_end);
+    TEST_CHECK(run.count == ref.count);
+    for (i = 0; i < run.count; i++) {
+        TEST_CHECK(run.addr[i] == ref.addr[i]);
+        TEST_CHECK(run.size[i] == ref.size[i]);
+        TEST_CHECK(run.cur_block[i] ==
+                   ((uint32_t)run.addr[i] | ((uint64_t)run.size[i] << 32)));
+        sum += run.size[i];
+    }
+    TEST_CHECK(sum == 32);
+    TEST_CHECK(INT64_MAX - state->budget == sum);
+    TEST_CHECK(state->exit_cause == UC_TB_EXIT_NONE);
+    OK(uc_close(uc));
+}
+
+static void test_arm_tb_budget_stops(void)
+{
+    TB_BUDGET_LOG ref;
+    int64_t n;
+
+    tb_budget_reference(&ref);
+    for (n = 1; n <= 33; n++) {
+        int with_code_hook;
+
+        for (with_code_hook = 0; with_code_hook < 2; with_code_hook++) {
+            TB_BUDGET_LOG run = {0};
+            uc_tb_budget *state;
+            uc_hook hook;
+            int64_t before = 0;
+            uint64_t stop = tb_budget_loop_end;
+            int i;
+
+            for (i = 0; i < ref.count; i++) {
+                if (before >= n) {
+                    stop = ref.addr[i];
+                    break;
+                }
+                before += ref.size[i];
+            }
+
+            uc_engine *uc = tb_budget_open(tb_budget_loop,
+                                           sizeof(tb_budget_loop) - 1, &state);
+            if (with_code_hook) {
+                OK(uc_hook_add(uc, &hook, UC_HOOK_CODE, tb_budget_code, &run, 1,
+                               0));
+            }
+            state->budget = n;
+            OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+            TEST_CHECK(tb_budget_pc(uc) == stop);
+            TEST_MSG("budget %" PRId64
+                     " code hook %d: pc 0x%x, expected 0x%" PRIx64,
+                     n, with_code_hook, tb_budget_pc(uc), stop);
+            TEST_CHECK(n - state->budget == before);
+            TEST_CHECK(state->exit_cause == (stop == tb_budget_loop_end
+                                                 ? UC_TB_EXIT_NONE
+                                                 : UC_TB_EXIT_BUDGET));
+            if (with_code_hook) {
+                TEST_CHECK(run.code_hits == (uint64_t)before);
+            }
+            OK(uc_close(uc));
+        }
+    }
+}
+
+static void test_arm_tb_budget_resume(void)
+{
+    uc_tb_budget *state;
+    uint64_t consumed = 0;
+    uint32_t r0;
+    uint32_t pc = code_start;
+    int runs = 0;
+
+    uc_engine *uc =
+        tb_budget_open(tb_budget_loop, sizeof(tb_budget_loop) - 1, &state);
+    while (pc != tb_budget_loop_end && runs < 100) {
+        state->budget = 5;
+        OK(uc_emu_start(uc, pc | 1, tb_budget_loop_end, 0, 0));
+        pc = tb_budget_pc(uc);
+        consumed += 5 - state->budget;
+        runs++;
+    }
+    OK(uc_reg_read(uc, UC_ARM_REG_R0, &r0));
+    TEST_CHECK(r0 == 10);
+    TEST_CHECK(consumed == 32);
+    TEST_CHECK(runs == 6);
+    OK(uc_close(uc));
+}
+
+static void test_arm_tb_budget_hook_live(void)
+{
+    TB_BUDGET_LOG run = {0};
+    uc_tb_budget *state;
+    uc_hook hook;
+    uint64_t flushes, flushes_after;
+    uint32_t r0;
+
+    uc_engine *uc =
+        tb_budget_open(tb_budget_loop, sizeof(tb_budget_loop) - 1, &state);
+    run.state = state;
+    OK(uc_hook_add(uc, &hook, UC_HOOK_BLOCK_ICOUNT, tb_budget_block, &run, 1,
+                   0));
+    state->hook_live = 0;
+    OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+    TEST_CHECK(run.count == 0);
+    TEST_CHECK(INT64_MAX - state->budget == 32);
+    OK(uc_ctl_tb_flushes(uc, &flushes));
+
+    state->hook_live = 1;
+    run.live_until = 3;
+    OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+    TEST_CHECK(run.count == 3);
+    TEST_CHECK(state->hook_live == 0);
+
+    state->hook_live = 1;
+    run.count = 0;
+    run.live_until = 0;
+    run.stop_at = 4;
+    state->budget = 100;
+    OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+    TEST_CHECK(run.count == 4);
+    TEST_CHECK(tb_budget_pc(uc) == 0x1002);
+    OK(uc_reg_read(uc, UC_ARM_REG_R0, &r0));
+    TEST_CHECK(r0 == 3);
+    TEST_CHECK(100 - state->budget == 4 + 3 * 3);
+    TEST_CHECK(state->exit_cause == UC_TB_EXIT_NONE);
+
+    OK(uc_ctl_tb_flushes(uc, &flushes_after));
+    TEST_CHECK(flushes_after == flushes);
+    OK(uc_close(uc));
+}
+
+static void test_arm_tb_budget_self_branch(void)
+{
+    char code[] = "\x01\x20\xfe\xe7\x00\xbf";
+    int leg;
+
+    for (leg = 0; leg < 5; leg++) {
+        TB_BUDGET_LOG run = {0};
+        uc_tb_budget *state;
+        uc_hook hook;
+        int64_t budget = leg == 0 ? INT64_C(1) << 50 : 100;
+
+        uc_engine *uc = tb_budget_open(code, sizeof(code) - 1, &state);
+        run.state = state;
+        if (leg == 1) {
+            OK(uc_hook_add(uc, &hook, UC_HOOK_CODE, tb_budget_code, &run, 1,
+                           0));
+        } else if (leg == 4) {
+            OK(uc_hook_add(uc, &hook, UC_HOOK_BLOCK, tb_budget_block, &run, 1,
+                           0));
+        } else if (leg >= 2) {
+            OK(uc_hook_add(uc, &hook, UC_HOOK_BLOCK_ICOUNT, tb_budget_block,
+                           &run, 1, 0));
+            state->hook_live = leg == 2;
+        }
+        state->budget = budget;
+        OK(uc_emu_start(uc, code_start | 1, 0x2000, 200000, 0));
+        TEST_CHECK(tb_budget_pc(uc) == 0x1002);
+        TEST_CHECK(state->budget == 0);
+        TEST_CHECK(state->exit_cause == UC_TB_EXIT_BUDGET);
+        TEST_MSG("leg %d: budget %" PRId64 " cause %d", leg, state->budget,
+                 state->exit_cause);
+        TEST_CHECK(state->cur_block == (0x1002 | (UINT64_C(1) << 32)));
+        if (leg == 1) {
+            TEST_CHECK(run.code_hits == 100);
+        } else if (leg == 2) {
+            TEST_CHECK(run.count == 1 + 98);
+        } else if (leg == 4) {
+            TEST_CHECK(run.count == 1 + 98 + 1);
+        } else if (leg == 3) {
+            TEST_CHECK(run.count == 0);
+        }
+        OK(uc_close(uc));
+    }
+}
+
+static void test_arm_tb_budget_self_branch_conditional(void)
+{
+    char code[] = "\x80\x42\xfe\xd0\x00\xbf";
+    TB_BUDGET_LOG run = {0};
+    uc_tb_budget *state;
+    uc_hook hook;
+
+    uc_engine *uc = tb_budget_open(code, sizeof(code) - 1, &state);
+    run.state = state;
+    OK(uc_hook_add(uc, &hook, UC_HOOK_BLOCK_ICOUNT, tb_budget_block, &run, 1,
+                   0));
+    state->hook_live = 1;
+    state->budget = 100;
+    OK(uc_emu_start(uc, code_start | 1, 0x2000, 0, 0));
+    TEST_CHECK(tb_budget_pc(uc) == 0x1002);
+    TEST_CHECK(state->budget == 0);
+    TEST_CHECK(run.count == 1 + 98);
+    OK(uc_close(uc));
+}
+
+static void test_arm_tb_budget_two_insn_loop(void)
+{
+    char code[] = "\x01\x30\xfd\xe7";
+    uc_tb_budget *state;
+    uint32_t r0;
+
+    uc_engine *uc = tb_budget_open(code, sizeof(code) - 1, &state);
+    state->budget = 100;
+    OK(uc_emu_start(uc, code_start | 1, 0x2000, 0, 0));
+    OK(uc_reg_read(uc, UC_ARM_REG_R0, &r0));
+    TEST_CHECK(r0 == 50);
+    TEST_CHECK(state->budget == 0);
+    TEST_CHECK(tb_budget_pc(uc) == code_start);
+    OK(uc_close(uc));
+}
+
+static void test_arm_tb_budget_self_branch_not_taken(void)
+{
+    char a32[] = "\x01\x00\x50\xe3\xff\xff\xff\xea\xfe\xff\xff\x0a"
+                 "\x00\xf0\x20\xe3\x00\xf0\x20\xe3";
+    char it[] = "\x01\x28\x08\xbf\xfe\xe7\x00\xbf\x00\xbf";
+    uc_tb_budget *state;
+    uc_engine *uc;
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_ARM, a32, sizeof(a32) - 1,
+                    UC_CPU_ARM_CORTEX_A15);
+    OK(uc_ctl_tb_budget_enable(uc));
+    OK(uc_ctl_tb_budget_state(uc, &state));
+    state->budget = 100;
+    OK(uc_emu_start(uc, code_start, 0x1010, 0, 0));
+    TEST_CHECK(tb_budget_pc(uc) == 0x1010);
+    TEST_CHECK(100 - state->budget == 4);
+    TEST_CHECK(state->exit_cause == UC_TB_EXIT_NONE);
+    OK(uc_close(uc));
+
+    uc = tb_budget_open("", 0, &state);
+    OK(uc_mem_write(uc, 0x1ffc, it, sizeof(it) - 1));
+    state->budget = 100;
+    OK(uc_emu_start(uc, 0x1ffc | 1, 0x2004, 0, 0));
+    TEST_CHECK(tb_budget_pc(uc) == 0x2004);
+    TEST_CHECK(100 - state->budget == 4);
+    TEST_CHECK(state->exit_cause == UC_TB_EXIT_NONE);
+    OK(uc_close(uc));
+}
+
+#if !defined(_WIN32)
+#include <pthread.h>
+#include <time.h>
+
+static const char tb_budget_mem_loop[] =
+    "\x11\x68\x01\x31\x11\x60\x53\x68\x93\x60\xf9\xe7";
+
+static void tb_budget_mem(uc_engine *uc, uc_mem_type type, uint64_t address,
+                          int size, int64_t value, void *user_data)
+{
+    (*(uint64_t *)user_data)++;
+}
+
+static void *tb_budget_requester(void *arg)
+{
+    struct timespec delay = {0, 20 * 1000 * 1000};
+
+    nanosleep(&delay, NULL);
+    OK(uc_ctl_request_exit((uc_engine *)arg));
+    return NULL;
+}
+
+static void test_arm_tb_budget_request_exit_thread(void)
+{
+    uc_tb_budget *state;
+    uc_hook hook;
+    uint64_t accesses = 0;
+    uint32_t r2 = 0x3000;
+    uint32_t pc = code_start;
+    pthread_t thread;
+    int rounds;
+
+    uc_engine *uc = tb_budget_open(tb_budget_mem_loop,
+                                   sizeof(tb_budget_mem_loop) - 1, &state);
+    OK(uc_reg_write(uc, UC_ARM_REG_R2, &r2));
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE,
+                   tb_budget_mem, &accesses, 0x3000, 0x3fff));
+    for (rounds = 0; rounds < 5; rounds++) {
+        uint64_t before = accesses;
+
+        TEST_CHECK(pthread_create(&thread, NULL, tb_budget_requester, uc) == 0);
+        state->budget = INT64_C(1) << 26;
+        OK(uc_emu_start(uc, pc | 1, 0x2000, 0, 0));
+        pc = tb_budget_pc(uc);
+        TEST_CHECK(pthread_join(thread, NULL) == 0);
+        TEST_CHECK(state->exit_cause == UC_TB_EXIT_ASYNC);
+        TEST_CHECK(tb_budget_pc(uc) == 0x1000);
+        TEST_CHECK((accesses - before) % 4 == 0);
+        TEST_CHECK(accesses > before);
+        TEST_CHECK(__atomic_load_n(&state->async_exit, __ATOMIC_ACQUIRE) == 0);
+        TEST_MSG("round %d: cause %d pc 0x%x accesses %" PRIu64, rounds,
+                 state->exit_cause, tb_budget_pc(uc), accesses - before);
+    }
+    OK(uc_close(uc));
+}
+#endif
+
+static void test_arm_tb_budget_request_exit_sticky(void)
+{
+    uc_tb_budget *state;
+    uint32_t r0;
+
+    uc_engine *uc =
+        tb_budget_open(tb_budget_loop, sizeof(tb_budget_loop) - 1, &state);
+    OK(uc_ctl_request_exit(uc));
+    OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+    TEST_CHECK(tb_budget_pc(uc) == code_start);
+    TEST_CHECK(state->budget == INT64_MAX);
+    TEST_CHECK(state->exit_cause == UC_TB_EXIT_ASYNC);
+    TEST_CHECK(state->async_exit == 0);
+
+    OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+    TEST_CHECK(tb_budget_pc(uc) == tb_budget_loop_end);
+    TEST_CHECK(state->exit_cause == UC_TB_EXIT_NONE);
+
+    OK(uc_ctl_request_exit(uc));
+    __atomic_store_n(&state->async_exit, 0, __ATOMIC_RELAXED);
+    OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+    OK(uc_reg_read(uc, UC_ARM_REG_R0, &r0));
+    TEST_CHECK(r0 == 10);
+    TEST_CHECK(state->exit_cause == UC_TB_EXIT_NONE);
+
+    state->budget = 0;
+    OK(uc_ctl_request_exit(uc));
+    OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+    TEST_CHECK(state->exit_cause == UC_TB_EXIT_ASYNC);
+    OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+    TEST_CHECK(state->exit_cause == UC_TB_EXIT_BUDGET);
+    TEST_CHECK(tb_budget_pc(uc) == code_start);
+    OK(uc_close(uc));
+}
+
+static void tb_budget_enable_in_callback(uc_engine *uc, uint64_t address,
+                                         uint32_t size, void *user_data)
+{
+    *(uc_err *)user_data = uc_ctl_tb_budget_disable(uc);
+}
+
+static void test_arm_tb_budget_mode_switch(void)
+{
+    uc_tb_budget *state;
+    uc_hook hook;
+    uc_err in_callback = UC_ERR_OK;
+    uint64_t flushes, flushes_after;
+    uc_engine *uc;
+
+    uc_common_setup(&uc, UC_ARCH_ARM, TB_BUDGET_MODE, tb_budget_loop,
+                    sizeof(tb_budget_loop) - 1, UC_CPU_ARM_CORTEX_M33);
+    uc_assert_err(UC_ERR_ARG, uc_ctl_request_exit(uc));
+    OK(uc_ctl_tb_budget_state(uc, &state));
+    state->budget = 0;
+    OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+    TEST_CHECK(tb_budget_pc(uc) == tb_budget_loop_end);
+    TEST_CHECK(state->budget == 0);
+    TEST_CHECK(state->exit_cause == UC_TB_EXIT_NONE);
+
+    OK(uc_ctl_tb_flushes(uc, &flushes));
+    OK(uc_ctl_tb_budget_enable(uc));
+    OK(uc_ctl_tb_flushes(uc, &flushes_after));
+    TEST_CHECK(flushes_after == flushes + 1);
+    TEST_CHECK(state->budget == INT64_MAX);
+    OK(uc_ctl_tb_budget_enable(uc));
+    OK(uc_ctl_tb_flushes(uc, &flushes));
+    TEST_CHECK(flushes == flushes_after);
+
+    state->budget = 5;
+    OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+    TEST_CHECK(tb_budget_pc(uc) == 0x1002);
+
+    OK(uc_hook_add(uc, &hook, UC_HOOK_BLOCK_ICOUNT,
+                   tb_budget_enable_in_callback, &in_callback, 1, 0));
+    state->budget = INT64_MAX;
+    OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+    uc_assert_err(UC_ERR_ARG, in_callback);
+    OK(uc_hook_del(uc, hook));
+
+    OK(uc_ctl_tb_budget_disable(uc));
+    state->budget = 5;
+    OK(uc_emu_start(uc, code_start | 1, tb_budget_loop_end, 0, 0));
+    TEST_CHECK(tb_budget_pc(uc) == tb_budget_loop_end);
+    uc_assert_err(UC_ERR_ARG, uc_ctl_request_exit(uc));
+    OK(uc_mem_write(uc, 0x2000, "\xfe\xe7", 2));
+    OK(uc_emu_start(uc, 0x2000 | 1, 0x3000, 10000, 0));
+    TEST_CHECK(tb_budget_pc(uc) == 0x2000);
+    TEST_CHECK(state->budget == 5);
+    OK(uc_close(uc));
+
+#ifdef UNICORN_HAS_X86
+    OK(uc_open(UC_ARCH_X86, UC_MODE_32, &uc));
+    uc_assert_err(UC_ERR_ARG, uc_ctl_tb_budget_enable(uc));
+    uc_assert_err(UC_ERR_ARG, uc_ctl_tb_budget_state(uc, &state));
+    uc_assert_err(UC_ERR_ARG, uc_ctl_request_exit(uc));
+    OK(uc_close(uc));
+#endif
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
@@ -5419,4 +5920,22 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_split_page_hop", test_arm_split_page_hop},
              {"test_arm_split_page_smc", test_arm_split_page_smc},
              {"test_arm_split_page_bound", test_arm_split_page_bound},
+             {"test_arm_tb_budget_counts", test_arm_tb_budget_counts},
+             {"test_arm_tb_budget_stops", test_arm_tb_budget_stops},
+             {"test_arm_tb_budget_resume", test_arm_tb_budget_resume},
+             {"test_arm_tb_budget_hook_live", test_arm_tb_budget_hook_live},
+             {"test_arm_tb_budget_self_branch", test_arm_tb_budget_self_branch},
+             {"test_arm_tb_budget_self_branch_conditional",
+              test_arm_tb_budget_self_branch_conditional},
+             {"test_arm_tb_budget_self_branch_not_taken",
+              test_arm_tb_budget_self_branch_not_taken},
+             {"test_arm_tb_budget_two_insn_loop",
+              test_arm_tb_budget_two_insn_loop},
+#if !defined(_WIN32)
+             {"test_arm_tb_budget_request_exit_thread",
+              test_arm_tb_budget_request_exit_thread},
+#endif
+             {"test_arm_tb_budget_request_exit_sticky",
+              test_arm_tb_budget_request_exit_sticky},
+             {"test_arm_tb_budget_mode_switch", test_arm_tb_budget_mode_switch},
              {NULL, NULL}};

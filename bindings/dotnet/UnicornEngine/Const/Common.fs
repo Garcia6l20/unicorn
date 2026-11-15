@@ -180,6 +180,12 @@ module Common =
     let UC_CTL_UC_REFUSE_MMIO = 27
     let UC_CTL_TB_TRANSLATIONS = 28
     let UC_CTL_TB_FLUSHES = 29
+    let UC_CTL_UC_TB_BUDGET = 30
+    let UC_CTL_UC_REQUEST_EXIT = 31
+
+    let UC_TB_EXIT_NONE = 0
+    let UC_TB_EXIT_BUDGET = 1
+    let UC_TB_EXIT_ASYNC = 2
     let UC_CTL_CONTEXT_CPU = 1
     let UC_CTL_CONTEXT_MEMORY = 2
 

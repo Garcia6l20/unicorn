@@ -226,6 +226,7 @@ typedef struct CPUTLB {
  */
 typedef struct CPUNegativeOffsetState {
     CPUTLB tlb;
+    UcTbBudget uc_budget;
     IcountDecr icount_decr;
 } CPUNegativeOffsetState;
 
