@@ -331,6 +331,7 @@ struct MemoryRegion {
     MemoryRegion *uc_alias_of;
     uint32_t uc_alias_count;
     uint32_t uc_alias_exec_count;
+    bool uc_split_piece;
 };
 
 struct IOMMUMemoryRegion {

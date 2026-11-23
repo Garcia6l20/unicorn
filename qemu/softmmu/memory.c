@@ -305,9 +305,29 @@ static void memory_region_remove_mapped_block(struct uc_struct *uc, MemoryRegion
     }
 }
 
-void memory_moveout(struct uc_struct *uc, MemoryRegion *mr)
+#define UC_TLB_FLUSH_RANGE_PAGES 64
+
+/**
+ * @brief Flush the TLB entries of [start, end).
+ *
+ * A range of more than UC_TLB_FLUSH_RANGE_PAGES pages is flushed with one
+ * tlb_flush. The threshold is a guess, no crossover was measured below 64 MB.
+ */
+static void flush_tlb_range(struct uc_struct *uc, hwaddr start, hwaddr end)
 {
     hwaddr addr;
+
+    if ((end - start) / uc->target_page_size > UC_TLB_FLUSH_RANGE_PAGES) {
+        tlb_flush(uc->cpu);
+        return;
+    }
+    for (addr = start; (int64_t)(end - addr) > 0; addr += uc->target_page_size) {
+        tlb_flush_page(uc->cpu, addr);
+    }
+}
+
+void memory_moveout(struct uc_struct *uc, MemoryRegion *mr)
+{
     /* A bit dirty, but it works.
      * The first subregion will be the one with the smalest priority.
      * In case of CoW this will always be the region which is mapped initial and later be moved in the subregion of the container.
@@ -327,9 +347,7 @@ void memory_moveout(struct uc_struct *uc, MemoryRegion *mr)
 
         // Make sure all pages associated with the MemoryRegion are flushed
         // Only need to do this if we are in a running state
-        for (addr = mr->addr; (int64_t)(mr->end - addr) > 0; addr += uc->target_page_size) {
-           tlb_flush_page(uc->cpu, addr);
-        }
+        flush_tlb_range(uc, mr->addr, mr->end);
     }
 
     memory_region_del_subregion(uc->system_memory, mr);
@@ -351,7 +369,6 @@ void memory_movein(struct uc_struct *uc, MemoryRegion *mr)
 
 void memory_unmap(struct uc_struct *uc, MemoryRegion *mr)
 {
-    hwaddr addr;
 
     if (uc->cpu) {
         // We also need to remove all tb cache
@@ -359,9 +376,7 @@ void memory_unmap(struct uc_struct *uc, MemoryRegion *mr)
 
         // Make sure all pages associated with the MemoryRegion are flushed
         // Only need to do this if we are in a running state
-        for (addr = mr->addr; (int64_t)(mr->end - addr) > 0; addr += uc->target_page_size) {
-           tlb_flush_page(uc->cpu, addr);
-        }
+        flush_tlb_range(uc, mr->addr, mr->end);
     }
     memory_region_del_subregion(uc->system_memory, mr);
     memory_region_remove_mapped_block(uc, mr, true);

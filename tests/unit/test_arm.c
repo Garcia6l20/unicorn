@@ -6301,7 +6301,357 @@ static void test_arm_exit_request_vldr(void)
     OK(uc_close(uc));
 }
 
+static uint32_t test_region_count(uc_engine *uc)
+{
+    uc_mem_region *regions;
+    uint32_t count;
+
+    OK(uc_mem_regions(uc, &regions, &count));
+    OK(uc_free(regions));
+    return count;
+}
+
+static uint32_t test_region_perms(uc_engine *uc, uint64_t address)
+{
+    uc_mem_region *regions;
+    uint32_t count, perms = 0xffffffff, i;
+
+    OK(uc_mem_regions(uc, &regions, &count));
+    for (i = 0; i < count; i++) {
+        if (regions[i].begin <= address && address <= regions[i].end) {
+            perms = regions[i].perms;
+        }
+    }
+    OK(uc_free(regions));
+    return perms;
+}
+
+static void test_arm_mem_protect_joins_regions(void)
+{
+    uc_engine *uc;
+    uint8_t *host = aligned_alloc(0x1000, 0x40000);
+    uint64_t base = 0x100000;
+    uint64_t seed = 12345;
+    int i;
+
+    TEST_CHECK(host != NULL);
+    OK(uc_open(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS, &uc));
+    OK(uc_ctl_set_cpu_model(uc, UC_CPU_ARM_CORTEX_M33));
+    OK(uc_mem_map_ptr(uc, base, 0x40000, UC_PROT_ALL, host));
+    TEST_CHECK(test_region_count(uc) == 1);
+
+    OK(uc_mem_protect(uc, base + 0x4000, 0x8000, UC_PROT_READ));
+    TEST_CHECK(test_region_count(uc) == 3);
+    TEST_CHECK(test_region_perms(uc, base + 0x3fff) == UC_PROT_ALL);
+    TEST_CHECK(test_region_perms(uc, base + 0x4000) == UC_PROT_READ);
+    TEST_CHECK(test_region_perms(uc, base + 0xbfff) == UC_PROT_READ);
+    TEST_CHECK(test_region_perms(uc, base + 0xc000) == UC_PROT_ALL);
+
+    OK(uc_mem_protect(uc, base + 0x4000, 0x8000, UC_PROT_ALL));
+    TEST_CHECK(test_region_count(uc) == 1);
+
+    for (i = 0; i < 200; i++) {
+        uint64_t first, pages;
+
+        seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+        first = (seed >> 33) % 0x30;
+        pages = 1 + ((seed >> 20) % 0x10);
+        OK(uc_mem_protect(uc, base, 0x40000, UC_PROT_NONE));
+        OK(uc_mem_protect(uc, base + first * 0x1000, pages * 0x1000,
+                          UC_PROT_ALL));
+        TEST_CHECK(test_region_count(uc) <= 3);
+        TEST_CHECK(test_region_perms(uc, base + first * 0x1000) ==
+                   UC_PROT_ALL);
+        TEST_CHECK(test_region_perms(uc, base + (first + pages) * 0x1000) ==
+                   UC_PROT_NONE);
+    }
+
+    OK(uc_mem_protect(uc, base, 0x40000, UC_PROT_READ | UC_PROT_WRITE));
+    TEST_CHECK(test_region_count(uc) == 1);
+    OK(uc_close(uc));
+    free(host);
+}
+
+static uc_engine *join_open(void)
+{
+    uc_engine *uc;
+
+    OK(uc_open(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS, &uc));
+    OK(uc_ctl_set_cpu_model(uc, UC_CPU_ARM_CORTEX_M33));
+    return uc;
+}
+
+static uint32_t test_region_count_in(uc_engine *uc, uint64_t lo, uint64_t hi)
+{
+    uc_mem_region *regions;
+    uint32_t count, n = 0, i;
+
+    OK(uc_mem_regions(uc, &regions, &count));
+    for (i = 0; i < count; i++) {
+        if (regions[i].begin >= lo && regions[i].end < hi) {
+            n++;
+        }
+    }
+    OK(uc_free(regions));
+    return n;
+}
+
+static void join_fill(uint8_t *host, size_t size)
+{
+    size_t i;
+
+    for (i = 0; i < size; i++) {
+        host[i] = (uint8_t)(i * 7 + (i >> 8) + 3);
+    }
+}
+
+static void test_arm_mem_protect_join_keeps_bytes(void)
+{
+    uc_engine *uc = join_open();
+    uint8_t *host = aligned_alloc(0x1000, 0x10000);
+    uint8_t *expect = malloc(0x10000);
+    uint8_t *back = malloc(0x10000);
+    uint8_t patch[0x40];
+    uint64_t base = 0x100000;
+    int round;
+
+    TEST_CHECK(host != NULL && expect != NULL && back != NULL);
+    join_fill(host, 0x10000);
+    memcpy(expect, host, 0x10000);
+    OK(uc_mem_map_ptr(uc, base, 0x10000, UC_PROT_ALL, host));
+
+    for (round = 0; round < 4; round++) {
+        uint64_t off = 0x3fe0 + (uint64_t)round * 0x2000;
+
+        OK(uc_mem_protect(uc, base + 0x4000, 0x8000, UC_PROT_READ));
+        OK(uc_mem_protect(uc, base + 0x4000, 0x8000, UC_PROT_ALL));
+        TEST_CHECK(test_region_count(uc) == 1);
+
+        memset(patch, 0xa0 + round, sizeof(patch));
+        OK(uc_mem_write(uc, base + off, patch, sizeof(patch)));
+        memcpy(expect + off, patch, sizeof(patch));
+        OK(uc_mem_read(uc, base, back, 0x10000));
+        TEST_CHECK(memcmp(back, expect, 0x10000) == 0);
+        TEST_CHECK(memcmp(host, expect, 0x10000) == 0);
+    }
+    OK(uc_close(uc));
+    free(back);
+    free(expect);
+    free(host);
+}
+
+static void test_arm_mem_protect_join_host_gap(void)
+{
+    uc_engine *uc = join_open();
+    uint8_t *host = aligned_alloc(0x1000, 0x8000);
+    uint64_t base = 0x100000;
+
+    TEST_CHECK(host != NULL);
+    OK(uc_mem_map_ptr(uc, base, 0x2000, UC_PROT_ALL, host));
+    OK(uc_mem_map_ptr(uc, base + 0x2000, 0x2000, UC_PROT_ALL, host + 0x4000));
+
+    OK(uc_mem_protect(uc, base + 0x1000, 0x2000, UC_PROT_READ));
+    TEST_CHECK(test_region_count(uc) == 4);
+    OK(uc_mem_protect(uc, base + 0x1000, 0x2000, UC_PROT_ALL));
+    TEST_CHECK(test_region_count(uc) == 2);
+    OK(uc_close(uc));
+    free(host);
+}
+
+static void test_arm_mem_protect_join_copied_regions(void)
+{
+    uc_engine *uc = join_open();
+    uint8_t data[0x4000];
+    uint8_t back[0x4000];
+    uint64_t base = 0x100000;
+
+    join_fill(data, sizeof(data));
+    OK(uc_mem_map(uc, base, 0x4000, UC_PROT_ALL));
+    OK(uc_mem_write(uc, base, data, sizeof(data)));
+    OK(uc_mem_protect(uc, base + 0x1000, 0x2000, UC_PROT_READ));
+    OK(uc_mem_protect(uc, base + 0x1000, 0x2000, UC_PROT_ALL));
+    TEST_CHECK(test_region_count(uc) == 3);
+    OK(uc_mem_read(uc, base, back, sizeof(back)));
+    TEST_CHECK(memcmp(back, data, sizeof(data)) == 0);
+    OK(uc_close(uc));
+}
+
+static void test_arm_mem_protect_join_own_regions(void)
+{
+    uc_engine *uc = join_open();
+    uint8_t *host = aligned_alloc(0x1000, 0x4000);
+    uint64_t base = 0x100000;
+
+    TEST_CHECK(host != NULL);
+    OK(uc_mem_map_ptr(uc, base, 0x2000, UC_PROT_ALL, host));
+    OK(uc_mem_map_ptr(uc, base + 0x2000, 0x2000, UC_PROT_ALL, host + 0x2000));
+
+    OK(uc_mem_protect(uc, base + 0x1000, 0x1000, UC_PROT_READ));
+    TEST_CHECK(test_region_count(uc) == 3);
+    OK(uc_mem_protect(uc, base + 0x1000, 0x1000, UC_PROT_ALL));
+    TEST_CHECK(test_region_count(uc) == 2);
+    OK(uc_mem_unmap(uc, base, 0x2000));
+    OK(uc_close(uc));
+    free(host);
+}
+
+static void test_arm_mem_protect_join_alias(void)
+{
+    uc_engine *uc = join_open();
+    uint8_t *host = aligned_alloc(0x1000, 0x4000);
+    uint64_t base = 0x100000;
+    uint64_t alias = 0x0a000000;
+
+    TEST_CHECK(host != NULL);
+    OK(uc_mem_map_ptr(uc, base, 0x4000, UC_PROT_ALL, host));
+    OK(uc_mem_protect(uc, base + 0x1000, 0x1000, UC_PROT_READ));
+    OK(uc_mem_map_alias(uc, alias, 0x1000, UC_PROT_READ, base + 0x1000));
+    TEST_CHECK(test_region_count(uc) == 4);
+
+    uc_assert_err(UC_ERR_ARG,
+                  uc_mem_protect(uc, base + 0x1000, 0x1000, UC_PROT_ALL));
+    TEST_CHECK(test_region_count(uc) == 4);
+
+    OK(uc_mem_protect(uc, base, 0x1000, UC_PROT_READ));
+    TEST_CHECK(test_region_count(uc) == 4);
+    TEST_CHECK(test_region_count_in(uc, base, base + 0x4000) == 3);
+    OK(uc_close(uc));
+    free(host);
+}
+
+static void test_arm_mem_protect_mmio(void)
+{
+    uc_engine *uc = join_open();
+    uint64_t base = 0x40000000;
+
+    OK(uc_mmio_map(uc, base, 0x3000, NULL, NULL, NULL, NULL));
+    OK(uc_mem_protect(uc, base + 0x1000, 0x1000, UC_PROT_READ));
+    TEST_CHECK(test_region_count(uc) == 3);
+    OK(uc_mem_protect(uc, base + 0x1000, 0x1000, UC_PROT_ALL));
+    OK(uc_close(uc));
+}
+
+static void test_arm_mem_protect_join_guest_access(void)
+{
+    uc_engine *uc = join_open();
+    uint8_t *host = aligned_alloc(0x1000, 0x10000);
+    uint64_t base = 0x100000;
+    uint64_t code = 0x8000;
+    uint16_t str_r1_r0 = 0x6001;
+    uint16_t ldr_r2_r0 = 0x6802;
+    uint32_t r0, r1 = 0xdeadbeef, r2, word;
+
+    TEST_CHECK(host != NULL);
+    join_fill(host, 0x10000);
+    OK(uc_mem_map(uc, code, 0x1000, UC_PROT_ALL));
+    OK(uc_mem_map_ptr(uc, base, 0x10000, UC_PROT_ALL, host));
+
+    OK(uc_mem_write(uc, code, &str_r1_r0, 2));
+    r0 = base + 0x1000;
+    OK(uc_reg_write(uc, UC_ARM_REG_R0, &r0));
+    OK(uc_reg_write(uc, UC_ARM_REG_R1, &r1));
+    OK(uc_emu_start(uc, code | 1, code + 2, 0, 0));
+    memcpy(&word, host + 0x1000, 4);
+    TEST_CHECK(word == 0xdeadbeef);
+
+    OK(uc_mem_protect(uc, base + 0x4000, 0x8000, UC_PROT_READ));
+    OK(uc_mem_protect(uc, base, 0x4000, UC_PROT_READ));
+    TEST_CHECK(test_region_count_in(uc, base, base + 0x10000) == 2);
+
+    r1 = 0x12345678;
+    OK(uc_reg_write(uc, UC_ARM_REG_R1, &r1));
+    uc_assert_err(UC_ERR_WRITE_PROT, uc_emu_start(uc, code | 1, code + 2, 0, 0));
+    memcpy(&word, host + 0x1000, 4);
+    TEST_CHECK(word == 0xdeadbeef);
+
+    OK(uc_mem_write(uc, code, &ldr_r2_r0, 2));
+    r0 = base + 0x4000;
+    OK(uc_reg_write(uc, UC_ARM_REG_R0, &r0));
+    OK(uc_emu_start(uc, code | 1, code + 2, 0, 0));
+    OK(uc_reg_read(uc, UC_ARM_REG_R2, &r2));
+    memcpy(&word, host + 0x4000, 4);
+    TEST_CHECK(r2 == word);
+    OK(uc_close(uc));
+    free(host);
+}
+
+static void test_arm_mem_remap_after_warm_tlb(void)
+{
+    uc_engine *uc = join_open();
+    uint8_t *host_a = aligned_alloc(0x1000, 0x20000);
+    uint8_t *host_b = aligned_alloc(0x1000, 0x20000);
+    uint64_t base = 0x100000;
+    uint64_t code = 0x8000;
+    uint16_t ldr_r2_r0 = 0x6802;
+    uint32_t r0 = base + 0x10000, r2, word;
+
+    TEST_CHECK(host_a != NULL && host_b != NULL);
+    memset(host_a, 0x11, 0x20000);
+    memset(host_b, 0x22, 0x20000);
+    OK(uc_mem_map(uc, code, 0x1000, UC_PROT_ALL));
+    OK(uc_mem_write(uc, code, &ldr_r2_r0, 2));
+    OK(uc_mem_map_ptr(uc, base, 0x20000, UC_PROT_ALL, host_a));
+    OK(uc_reg_write(uc, UC_ARM_REG_R0, &r0));
+    OK(uc_emu_start(uc, code | 1, code + 2, 0, 0));
+    OK(uc_reg_read(uc, UC_ARM_REG_R2, &word));
+    TEST_CHECK(word == 0x11111111);
+
+    OK(uc_mem_unmap(uc, base, 0x20000));
+    OK(uc_mem_map_ptr(uc, base, 0x20000, UC_PROT_ALL, host_b));
+    OK(uc_reg_write(uc, UC_ARM_REG_R0, &r0));
+    OK(uc_emu_start(uc, code | 1, code + 2, 0, 0));
+    OK(uc_reg_read(uc, UC_ARM_REG_R2, &r2));
+    TEST_CHECK(r2 == 0x22222222);
+    OK(uc_close(uc));
+    free(host_a);
+    free(host_b);
+}
+
+static void test_arm_mem_unmap_after_warm_tlb(void)
+{
+    uc_engine *uc = join_open();
+    uint8_t *host = aligned_alloc(0x1000, 0x40000);
+    uint64_t base = 0x100000;
+    uint64_t code = 0x8000;
+    uint16_t ldr_r2_r0 = 0x6802;
+    uint32_t r0 = base + 0x20000;
+
+    TEST_CHECK(host != NULL);
+    memset(host, 0x33, 0x40000);
+    OK(uc_mem_map(uc, code, 0x1000, UC_PROT_ALL));
+    OK(uc_mem_write(uc, code, &ldr_r2_r0, 2));
+    OK(uc_mem_map_ptr(uc, base, 0x40000, UC_PROT_ALL, host));
+    OK(uc_reg_write(uc, UC_ARM_REG_R0, &r0));
+    OK(uc_emu_start(uc, code | 1, code + 2, 0, 0));
+
+    OK(uc_mem_unmap(uc, base, 0x40000));
+    OK(uc_reg_write(uc, UC_ARM_REG_R0, &r0));
+    uc_assert_err(UC_ERR_READ_UNMAPPED,
+                  uc_emu_start(uc, code | 1, code + 2, 0, 0));
+    OK(uc_close(uc));
+    free(host);
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
+             {"test_arm_mem_protect_joins_regions",
+              test_arm_mem_protect_joins_regions},
+             {"test_arm_mem_protect_join_keeps_bytes",
+              test_arm_mem_protect_join_keeps_bytes},
+             {"test_arm_mem_protect_join_host_gap",
+              test_arm_mem_protect_join_host_gap},
+             {"test_arm_mem_protect_join_copied_regions",
+              test_arm_mem_protect_join_copied_regions},
+             {"test_arm_mem_protect_join_own_regions",
+              test_arm_mem_protect_join_own_regions},
+             {"test_arm_mem_protect_join_alias",
+              test_arm_mem_protect_join_alias},
+             {"test_arm_mem_protect_join_guest_access",
+              test_arm_mem_protect_join_guest_access},
+             {"test_arm_mem_protect_mmio", test_arm_mem_protect_mmio},
+             {"test_arm_mem_remap_after_warm_tlb",
+              test_arm_mem_remap_after_warm_tlb},
+             {"test_arm_mem_unmap_after_warm_tlb",
+              test_arm_mem_unmap_after_warm_tlb},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
              {"test_armeb_be8_sub", test_armeb_be8_sub},

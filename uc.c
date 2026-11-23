@@ -1854,6 +1854,7 @@ static bool split_region(struct uc_struct *uc, MemoryRegion *mr,
             if (uc_mem_map_ptr(uc, begin, l_size, perms, backup) != UC_ERR_OK) {
                 goto error;
             }
+            uc->memory_mapping(uc, begin)->uc_split_piece = true;
         }
     }
 
@@ -1871,6 +1872,7 @@ static bool split_region(struct uc_struct *uc, MemoryRegion *mr,
                 UC_ERR_OK) {
                 goto error;
             }
+            uc->memory_mapping(uc, address)->uc_split_piece = true;
         }
     }
 
@@ -1888,6 +1890,7 @@ static bool split_region(struct uc_struct *uc, MemoryRegion *mr,
                                backup + l_size + m_size) != UC_ERR_OK) {
                 goto error;
             }
+            uc->memory_mapping(uc, chunk_end)->uc_split_piece = true;
         }
     }
 
@@ -1901,6 +1904,110 @@ error:
         free(backup);
     }
     return false;
+}
+
+/**
+ * @brief Tell whether two neighbouring regions can become one.
+ *
+ * Both must be RAM pieces made by split_region, map one host buffer without
+ * a gap, have the same permissions and have no alias. Regions the embedder
+ * mapped itself are never joined.
+ */
+static bool regions_joinable(struct uc_struct *uc, MemoryRegion *left,
+                             MemoryRegion *right)
+{
+    if (left == NULL || right == NULL || !left->ram || !right->ram ||
+        !left->uc_split_piece || !right->uc_split_piece ||
+        left->container != uc->system_memory ||
+        right->container != uc->system_memory || left->end != right->addr ||
+        left->perms != right->perms || left->ram_block == NULL ||
+        right->ram_block == NULL || !(left->ram_block->flags & 1) ||
+        !(right->ram_block->flags & 1) || left->uc_alias_of != NULL ||
+        right->uc_alias_of != NULL || left->uc_alias_count != 0 ||
+        right->uc_alias_count != 0) {
+        return false;
+    }
+    return left->ram_block->host + int128_get64(left->size) ==
+           right->ram_block->host;
+}
+
+/**
+ * @brief Join the split pieces around [address, address + size) again.
+ *
+ * A uc_mem_protect over part of a region splits it in up to three and
+ * nothing else joins the pieces, so the region list would grow with every
+ * protect.
+ *
+ * @return false when a joined range could not be mapped again.
+ */
+static bool join_regions_around(struct uc_struct *uc, uint64_t address,
+                                uint64_t size)
+{
+    MemoryRegion *mr = uc->memory_mapping(uc, address);
+    MemoryRegion *last = uc->memory_mapping(uc, address + size - 1);
+    uint64_t pos, limit;
+
+    if (mr == NULL || last == NULL) {
+        return false;
+    }
+    while (mr->addr > 0) {
+        MemoryRegion *before = uc->memory_mapping(uc, mr->addr - 1);
+
+        if (!regions_joinable(uc, before, mr)) {
+            break;
+        }
+        mr = before;
+    }
+    pos = mr->addr;
+    limit = last->end;
+    while (true) {
+        MemoryRegion *after = uc->memory_mapping(uc, limit);
+
+        if (!regions_joinable(uc, last, after)) {
+            break;
+        }
+        last = after;
+        limit = last->end;
+    }
+    while (pos < limit) {
+        MemoryRegion *first = uc->memory_mapping(uc, pos);
+        MemoryRegion *run = first;
+        uint64_t begin, end;
+        uint32_t perms;
+        uint8_t *host;
+
+        if (first == NULL) {
+            return false;
+        }
+        if (!first->ram) {
+            pos = first->end;
+            continue;
+        }
+        while (run->end < limit) {
+            MemoryRegion *next = uc->memory_mapping(uc, run->end);
+
+            if (!regions_joinable(uc, run, next)) {
+                break;
+            }
+            run = next;
+        }
+        begin = first->addr;
+        end = run->end;
+        if (run != first) {
+            perms = first->perms;
+            host = first->ram_block->host;
+            if (uc_mem_unmap(uc, begin, end - begin) != UC_ERR_OK ||
+                uc_mem_map_ptr(uc, begin, end - begin, perms, host) !=
+                    UC_ERR_OK) {
+                return false;
+            }
+            first = uc->memory_mapping(uc, begin);
+            first->uc_split_piece = true;
+            uc->readonly_mem(first, (perms & UC_PROT_WRITE) == 0);
+        }
+        pos = end;
+    }
+    return true;
 }
 
 UNICORN_EXPORT
@@ -1992,6 +2099,11 @@ uc_err uc_mem_protect(struct uc_struct *uc, uint64_t address, uint64_t size,
 
         count += len;
         addr += len;
+    }
+
+    if (!join_regions_around(uc, address, size)) {
+        restore_jit_state(uc);
+        return UC_ERR_NOMEM;
     }
 
     // if EXEC permission is removed, then quit TB and continue at the same
