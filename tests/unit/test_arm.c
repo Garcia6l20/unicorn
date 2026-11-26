@@ -4148,15 +4148,17 @@ static void test_arm_bus_hook_access(uc_engine *uc, uc_mem_type type,
 }
 
 static uc_engine *test_arm_bus_hooked_open(V8M_RUN *run, BUS_LOG *log,
-                                           BUS_HOOKS *hooks, int types)
+                                           BUS_HOOKS *hooks, int types,
+                                           int verdict)
 {
     uc_engine *uc;
     uc_hook hook;
     char code[] = "\x10\x60\x11\x68";
+    bool raz = verdict == UC_BUS_RAZ_WI;
 
     uc = test_arm_v8m_open(code, sizeof(code) - 1, run);
     test_arm_bus_put(uc, BUS_PAGE, BUS_WORD);
-    test_arm_bus_log(log, BUS_PAGE, UC_BUS_FILTER_DATA, UC_BUS_RAZ_WI);
+    test_arm_bus_log(log, BUS_PAGE, UC_BUS_FILTER_DATA, verdict);
     test_arm_bus_install(uc, log);
     OK(uc_hook_add(uc, &hook, types, test_arm_bus_hook_access, hooks, BUS_PAGE,
                    BUS_PAGE + 3));
@@ -4165,12 +4167,14 @@ static uc_engine *test_arm_bus_hooked_open(V8M_RUN *run, BUS_LOG *log,
     test_arm_v8m_reg(uc, UC_ARM_REG_R2, BUS_PAGE);
     test_arm_v8m_run(uc, run, code_start, code_start + 4);
     TEST_CHECK(run->intno == -1);
-    TEST_CHECK(test_arm_v8m_word(uc, BUS_PAGE) == BUS_WORD);
-    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R1) == 0);
+    TEST_CHECK(test_arm_v8m_word(uc, BUS_PAGE) == (raz ? BUS_WORD : 0x55aa));
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R1) == (raz ? 0 : 0x55aa));
     TEST_CHECK(log->accesses == 2);
     TEST_CHECK(log->stored == 0x55aa);
-    TEST_CHECK(hooks->writes == 1);
-    TEST_CHECK(hooks->written == 0x55aa);
+    TEST_CHECK(hooks->writes == (raz ? 0 : 1));
+    TEST_CHECK(hooks->written == (raz ? 0 : 0x55aa));
+    TEST_MSG("%s: writes %d written 0x%llx", raz ? "RAZ" : "allow",
+             hooks->writes, (unsigned long long)hooks->written);
     return uc;
 }
 
@@ -4179,10 +4183,20 @@ static void test_arm_bus_filter_mem_hooks(void)
     V8M_RUN run;
     BUS_LOG log;
     BUS_HOOKS hooks = {0, 0, 0, false};
-    uc_engine *uc = test_arm_bus_hooked_open(
-        &run, &log, &hooks, UC_HOOK_MEM_WRITE | UC_HOOK_MEM_READ);
+    uc_engine *uc =
+        test_arm_bus_hooked_open(&run, &log, &hooks,
+                                 UC_HOOK_MEM_WRITE | UC_HOOK_MEM_READ,
+                                 UC_BUS_RAZ_WI);
 
     TEST_CHECK(hooks.reads == 0);
+    TEST_CHECK(log.page_fills == 1);
+    OK(uc_close(uc));
+
+    memset(&hooks, 0, sizeof(hooks));
+    uc = test_arm_bus_hooked_open(&run, &log, &hooks,
+                                  UC_HOOK_MEM_WRITE | UC_HOOK_MEM_READ,
+                                  UC_BUS_ALLOW);
+    TEST_CHECK(hooks.reads == 1);
     TEST_CHECK(log.page_fills == 1);
     OK(uc_close(uc));
 }
@@ -4257,8 +4271,8 @@ static void test_arm_bus_filter_hook_refill(void)
     V8M_RUN run;
     BUS_LOG log;
     BUS_HOOKS hooks = {0, 0, 0, true};
-    uc_engine *uc =
-        test_arm_bus_hooked_open(&run, &log, &hooks, UC_HOOK_MEM_WRITE);
+    uc_engine *uc = test_arm_bus_hooked_open(&run, &log, &hooks,
+                                             UC_HOOK_MEM_WRITE, UC_BUS_ALLOW);
 
     TEST_CHECK(log.page_fills == 2);
     TEST_MSG("fills %d", log.page_fills);
@@ -4348,7 +4362,7 @@ static bool test_arm_bus_prot_drop(uc_engine *uc, uc_mem_type type,
     return true;
 }
 
-static void test_arm_bus_filter_prot_drop(void)
+static void test_arm_bus_prot_drop_leg(int verdict)
 {
     uc_engine *uc;
     V8M_RUN run;
@@ -4357,11 +4371,12 @@ static void test_arm_bus_filter_prot_drop(void)
     int drops = 0;
     char code[] = "\x10\x60\x11\x68";
     uint32_t flash = 0x6000;
+    bool raz = verdict == UC_BUS_RAZ_WI;
 
     uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
     OK(uc_mem_map(uc, flash, 0x400, UC_PROT_READ | UC_PROT_EXEC));
     test_arm_bus_put(uc, flash, BUS_WORD);
-    test_arm_bus_log(&log, flash, UC_BUS_FILTER_DATA, UC_BUS_RAZ_WI);
+    test_arm_bus_log(&log, flash, UC_BUS_FILTER_DATA, verdict);
     test_arm_bus_install(uc, &log);
     OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_WRITE_PROT, test_arm_bus_prot_drop,
                    &drops, flash, flash + 3));
@@ -4370,13 +4385,72 @@ static void test_arm_bus_filter_prot_drop(void)
     test_arm_v8m_reg(uc, UC_ARM_REG_R2, flash);
     test_arm_v8m_run(uc, &run, code_start, code_start + 4);
     TEST_CHECK(run.intno == -1);
-    TEST_CHECK(drops == 1);
+    TEST_CHECK(drops == (raz ? 0 : 1));
     TEST_CHECK(test_arm_v8m_word(uc, flash) == BUS_WORD);
-    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R1) == 0);
-    TEST_CHECK(log.accesses == 1);
-    TEST_CHECK(log.writes == 0);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R1) == (raz ? 0 : BUS_WORD));
+    TEST_CHECK(log.accesses == 2);
+    TEST_CHECK(log.writes == 1);
+    TEST_CHECK(log.stored == 0x55aa);
     TEST_CHECK(log.type == UC_MEM_READ);
+    TEST_MSG("%s: drops %d accesses %d writes %d", raz ? "RAZ" : "allow",
+             drops, log.accesses, log.writes);
     OK(uc_close(uc));
+}
+
+static void test_arm_bus_filter_prot_drop(void)
+{
+    test_arm_bus_prot_drop_leg(UC_BUS_RAZ_WI);
+    test_arm_bus_prot_drop_leg(UC_BUS_ALLOW);
+}
+
+static void test_arm_bus_store_order_leg(int verdict, uint32_t offset)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    uc_hook intr;
+    V8M_RUN run;
+    V8M_FAULT fault = {-1, 0, 0};
+    BUS_LOG log;
+    BUS_HOOKS hooks = {0, 0, 0, false};
+    char code[] = "\x10\x60";
+    bool aligned = offset == 0;
+    bool allow = verdict == UC_BUS_ALLOW;
+    uint32_t low = 0;
+    uint32_t high = 0;
+
+    uc = test_arm_v8m_open(code, sizeof(code) - 1, &run);
+    OK(uc_hook_add(uc, &intr, UC_HOOK_INTR, test_arm_v8m_fault_intr, &fault, 1,
+                   0));
+    test_arm_bus_put(uc, BUS_PAGE, BUS_WORD);
+    test_arm_bus_put(uc, BUS_PAGE + 4, ~BUS_WORD);
+    test_arm_bus_log(&log, BUS_PAGE, UC_BUS_FILTER_DATA, verdict);
+    test_arm_bus_install(uc, &log);
+    OK(uc_hook_add(uc, &hook, UC_HOOK_MEM_WRITE, test_arm_bus_hook_access,
+                   &hooks, BUS_PAGE, BUS_PAGE + 7));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0x55aa66bb);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, BUS_PAGE + offset);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 2);
+    OK(uc_mem_read(uc, BUS_PAGE, &low, 4));
+    OK(uc_mem_read(uc, BUS_PAGE + 4, &high, 4));
+    TEST_CHECK(fault.intno ==
+               (verdict == UC_BUS_FAULT ? V8M_EXCP_DATA_ABORT : -1));
+    TEST_CHECK(hooks.writes == (allow ? 1 : 0));
+    TEST_CHECK(log.writes == (aligned ? 1 : (verdict == UC_BUS_FAULT ? 1 : 4)));
+    TEST_CHECK((low == BUS_WORD) == !allow);
+    TEST_MSG("verdict %d at +%u: fault %d hooks %d filter writes %d low 0x%x "
+             "high 0x%x",
+             verdict, offset, fault.intno, hooks.writes, log.writes, low, high);
+    OK(uc_close(uc));
+}
+
+static void test_arm_bus_filter_store_hook_order(void)
+{
+    test_arm_bus_store_order_leg(UC_BUS_ALLOW, 0);
+    test_arm_bus_store_order_leg(UC_BUS_RAZ_WI, 0);
+    test_arm_bus_store_order_leg(UC_BUS_FAULT, 0);
+    test_arm_bus_store_order_leg(UC_BUS_ALLOW, 2);
+    test_arm_bus_store_order_leg(UC_BUS_RAZ_WI, 2);
+    test_arm_bus_store_order_leg(UC_BUS_FAULT, 2);
 }
 
 static void test_arm_bus_filter_alias(void)
@@ -6798,6 +6872,8 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_read_hook_flush", test_arm_read_hook_flush},
              {"test_arm_read_hook_flush_resize", test_arm_read_hook_flush_resize},
              {"test_arm_bus_filter_prot_drop", test_arm_bus_filter_prot_drop},
+             {"test_arm_bus_filter_store_hook_order",
+              test_arm_bus_filter_store_hook_order},
              {"test_arm_bus_filter_alias", test_arm_bus_filter_alias},
              {"test_arm_bus_filter_ctl", test_arm_bus_filter_ctl},
              {"test_arm_bus_filter_ram_only", test_arm_bus_filter_ram_only},

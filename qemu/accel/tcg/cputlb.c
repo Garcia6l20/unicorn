@@ -2403,6 +2403,10 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
     MemoryRegion *mr;
     CPUTLBHookState hook_state;
     bool hooked = false;
+    bool filtered;
+    bool filter_judged = false;
+    bool hooks_after;
+    uint64_t refusals;
 
     tlb_hook_state_init(env, &hook_state);
 
@@ -2431,7 +2435,19 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
         uc->slow_path_ram_accesses++;
     }
 
-    if (!uc->size_recur_mem) { // disabling write callback if in recursive call
+    filtered = (tlb_addr & TLB_WATCHPOINT) &&
+               env_tlb(env)->d[mmu_idx].iotlb[index].bus_filter;
+    if (filtered && (addr & (size - 1)) == 0) {
+        if (!bus_filter_allows_store(env, &env_tlb(env)->d[mmu_idx].iotlb[index],
+                                     addr, paddr, size, mmu_idx, val,
+                                     retaddr)) {
+            return;
+        }
+        filter_judged = true;
+    }
+    hooks_after = filtered && !filter_judged && !uc->size_recur_mem;
+
+    if (!uc->size_recur_mem && !hooks_after) { // disabling write callback if in recursive call
         // Unicorn: callback on memory write
         HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE) {
             if (hook->to_delete)
@@ -2594,7 +2610,7 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
             /* On watchpoint hit, this will longjmp out.  */
             cpu_check_watchpoint(env_cpu(env), addr, size,
                                  iotlbentry->attrs, BP_MEM_WRITE, retaddr);
-            if (iotlbentry->bus_filter &&
+            if (iotlbentry->bus_filter && !filter_judged &&
                 !bus_filter_allows_store(env, iotlbentry, addr, paddr, size,
                                          mmu_idx, val, retaddr)) {
                 return;
@@ -2689,6 +2705,7 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
          */
         old_size = uc->size_recur_mem;
         uc->size_recur_mem = size;
+        refusals = uc->bus_refusals;
         for (i = 0; i < size; ++i) {
             uint8_t val8;
             if (memop_big_endian(op)) {
@@ -2701,6 +2718,19 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
             helper_ret_stb_mmu(env, addr + i, val8, oi, retaddr);
         }
         uc->size_recur_mem = old_size;
+        if (hooks_after && uc->bus_refusals == refusals) {
+            HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE) {
+                if (hook->to_delete)
+                    continue;
+                if (!HOOK_BOUND_CHECK(hook, paddr))
+                    continue;
+                tlb_hook_state_sync(env, retaddr, &hook_state);
+                JIT_CALLBACK_GUARD(((uc_cb_hookmem_t)hook->callback)(uc, UC_MEM_WRITE, paddr, size, val, hook->user_data));
+                if (uc->stop_request)
+                    break;
+            }
+            tlb_hook_state_restore(env, &hook_state);
+        }
         return;
     }
 
