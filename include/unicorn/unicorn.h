@@ -476,7 +476,10 @@ typedef unsigned (*uc_cb_bus_page_t)(uc_engine *uc, uint64_t page,
  * sees the value the load returns. An unaligned access calls it for each
  * part first and runs its UC_HOOK_MEM_READ or UC_HOOK_MEM_WRITE hooks after,
  * only when no part was refused, also when only the page of its last bytes
- * is filtered. An unaligned store to a region mapped without UC_PROT_WRITE
+ * is filtered. An unaligned access that crosses a page fills the TLB entry of
+ * its second page before any of its hooks, with or without a bus filter, so
+ * a fault the second page's translation raises runs none of them. An
+ * unaligned store to a region mapped without UC_PROT_WRITE
  * runs its UC_HOOK_MEM_WRITE and UC_HOOK_MEM_WRITE_PROT hooks first, then
  * calls it for each byte. Every access calls it before the RAM access. An
  * unaligned load is split into aligned parts, an unaligned store into bytes,
@@ -486,7 +489,10 @@ typedef unsigned (*uc_cb_bus_page_t)(uc_engine *uc, uint64_t page,
  * its instruction. A store sees the state of an earlier point of its
  * translated block, the pc included, until the callback syncs it with
  * UC_CTL_BUS_SYNC_PC. The callback must not call the engine other than
- * uc_reg_read and UC_CTL_BUS_SYNC_PC.
+ * uc_reg_read and UC_CTL_BUS_SYNC_PC. A callback that returns UC_BUS_RAZ_WI
+ * or UC_BUS_FAULT may also call uc_emu_stop, UC_CTL_UC_EXIT_AFTER_INSN and
+ * UC_CTL_TLB_FLUSH: the engine reads nothing of the access's TLB entry after
+ * such a verdict.
  * @param uc The engine.
  * @param address Bus address of the access, or of the aligned part of an
  *        unaligned access: a word load at 0x4002 calls with 0x4000 and

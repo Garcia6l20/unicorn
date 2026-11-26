@@ -1904,7 +1904,7 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
         }
         filter_judged = true;
     } else if (unlikely((addr & (size - 1)) != 0) && !filtered && !code_read &&
-               !uc->size_recur_mem && uc->bus_access_cb != NULL &&
+               !uc->size_recur_mem &&
                (addr & ~TARGET_PAGE_MASK) + size > TARGET_PAGE_SIZE) {
         filtered = tlb_second_page_filtered(env, mmu_idx, addr, size,
                                             access_type, retaddr);
@@ -2499,7 +2499,7 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
         }
         filter_judged = true;
     } else if (unlikely((addr & (size - 1)) != 0) && !filtered &&
-               !uc->size_recur_mem && uc->bus_access_cb != NULL &&
+               !uc->size_recur_mem &&
                (addr & ~TARGET_PAGE_MASK) + size > TARGET_PAGE_SIZE) {
         filtered = tlb_second_page_filtered(env, mmu_idx, addr, size,
                                             MMU_DATA_STORE, retaddr);

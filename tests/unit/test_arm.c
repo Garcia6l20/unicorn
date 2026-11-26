@@ -4566,6 +4566,60 @@ static void test_arm_bus_filter_cross_page_hook_order(void)
     test_arm_bus_cross_leg(false, UC_BUS_FAULT);
 }
 
+static void test_arm_cross_page_fault_leg(bool store, bool filter)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    V8M_RUN run;
+    BUS_LOG log;
+    BUS_HOOKS hooks = {0, 0, 0, false};
+    char code_store[] = "\x10\x60";
+    char code_load[] = "\x11\x68";
+    uint32_t low = 0;
+    uint32_t high = 0;
+
+    uc = test_arm_v8m_ns_open(store ? code_store : code_load, 2, &run);
+    test_arm_v8m_sau_region(uc, 0, BUS_PAGE - 0x400,
+                            (BUS_PAGE - 0x20) | V8M_SAU_ENABLE);
+    test_arm_bus_put(uc, BUS_PAGE - 4, BUS_WORD);
+    test_arm_bus_put(uc, BUS_PAGE, ~BUS_WORD);
+    if (filter) {
+        test_arm_bus_log(&log, BUS_DATA, UC_BUS_FILTER_DATA, UC_BUS_ALLOW);
+        test_arm_bus_install(uc, &log);
+    }
+    OK(uc_hook_add(uc, &hook, store ? UC_HOOK_MEM_WRITE : UC_HOOK_MEM_READ,
+                   test_arm_bus_hook_access, &hooks, BUS_PAGE - 4,
+                   BUS_PAGE + 3));
+    test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0x55aa66bb);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0xffffffff);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, BUS_PAGE - 2);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 2);
+    OK(uc_mem_read(uc, BUS_PAGE - 4, &low, 4));
+    OK(uc_mem_read(uc, BUS_PAGE, &high, 4));
+    TEST_CHECK(run.intno == V8M_EXCP_DATA_ABORT);
+    TEST_CHECK(run.pc == code_start);
+    TEST_CHECK(hooks.reads == 0);
+    TEST_CHECK(hooks.writes == 0);
+    TEST_CHECK(low == BUS_WORD);
+    TEST_CHECK(high == ~BUS_WORD);
+    TEST_CHECK(test_arm_v8m_get(uc, UC_ARM_REG_R1) == 0xffffffff);
+    if (filter) {
+        TEST_CHECK(log.accesses == 0);
+    }
+    TEST_MSG("%s %s filter: intno %d pc 0x%x hooks %d/%d low 0x%x high 0x%x",
+             store ? "store" : "load", filter ? "with" : "without", run.intno,
+             run.pc, hooks.writes, hooks.reads, low, high);
+    OK(uc_close(uc));
+}
+
+static void test_arm_cross_page_fault_before_hooks(void)
+{
+    test_arm_cross_page_fault_leg(true, true);
+    test_arm_cross_page_fault_leg(true, false);
+    test_arm_cross_page_fault_leg(false, true);
+    test_arm_cross_page_fault_leg(false, false);
+}
+
 typedef struct _BUS_PC {
     int verdict;
     bool sync;
@@ -7096,6 +7150,8 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
               test_arm_bus_filter_prot_unaligned},
              {"test_arm_bus_filter_cross_page_hook_order",
               test_arm_bus_filter_cross_page_hook_order},
+             {"test_arm_cross_page_fault_before_hooks",
+              test_arm_cross_page_fault_before_hooks},
              {"test_arm_bus_filter_sync_pc", test_arm_bus_filter_sync_pc},
              {"test_arm_bus_filter_sync_pc_it_block",
               test_arm_bus_filter_sync_pc_it_block},
