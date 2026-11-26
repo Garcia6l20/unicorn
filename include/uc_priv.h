@@ -424,6 +424,8 @@ struct uc_struct {
     uc_cb_bus_access_t bus_access_cb;
     void *bus_filter_user;
     uint64_t bus_refusals;
+    void *bus_access_state;
+    uc_args_uc_t bus_access_sync;
     bool bus_fill_filter;
     bool bus_fill_fetch_each;
     uint32_t bus_fill_fetch_end;

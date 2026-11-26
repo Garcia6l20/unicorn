@@ -177,6 +177,7 @@ pub const unicornConst = enum(c_int) {
 	CTL_TB_FLUSHES = 29,
 	CTL_UC_TB_BUDGET = 30,
 	CTL_UC_REQUEST_EXIT = 31,
+	CTL_BUS_SYNC_PC = 32,
 
 	TB_EXIT_NONE = 0,
 	TB_EXIT_BUDGET = 1,

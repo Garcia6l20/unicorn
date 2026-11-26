@@ -179,6 +179,7 @@ public interface UnicornConst {
     public static final int UC_CTL_TB_FLUSHES = 29;
     public static final int UC_CTL_UC_TB_BUDGET = 30;
     public static final int UC_CTL_UC_REQUEST_EXIT = 31;
+    public static final int UC_CTL_BUS_SYNC_PC = 32;
 
     public static final int UC_TB_EXIT_NONE = 0;
     public static final int UC_TB_EXIT_BUDGET = 1;

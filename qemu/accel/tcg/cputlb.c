@@ -247,6 +247,8 @@ static inline void tlb_n_used_entries_dec(CPUArchState *env, uintptr_t mmu_idx)
     env_tlb(env)->d[mmu_idx].n_used_entries--;
 }
 
+static void tlb_bus_access_sync(struct uc_struct *uc);
+
 void tlb_init(CPUState *cpu)
 {
     CPUArchState *env = cpu->env_ptr;
@@ -259,6 +261,7 @@ void tlb_init(CPUState *cpu)
     for (i = 0; i < NB_MMU_MODES; i++) {
         tlb_mmu_init(&env_tlb(env)->d[i], &env_tlb(env)->f[i], now);
     }
+    cpu->uc->bus_access_sync = tlb_bus_access_sync;
 }
 
 /* flush_all_helper: run fn across all cpus
@@ -1564,6 +1567,7 @@ typedef uint64_t FullLoadHelper(CPUArchState *env, target_ulong addr,
 
 typedef struct CPUTLBHookState {
     bool synced;
+    uintptr_t retaddr;
 #ifdef TARGET_ARM
     uint32_t condexec_bits;
     uint32_t restored_condexec_bits;
@@ -1609,10 +1613,20 @@ static inline void tlb_hook_state_restore(CPUArchState *env,
 #endif
 }
 
+static void tlb_bus_access_sync(struct uc_struct *uc)
+{
+    CPUTLBHookState *state = uc->bus_access_state;
+
+    if (state != NULL) {
+        tlb_hook_state_sync(uc->cpu->env_ptr, state->retaddr, state);
+    }
+}
+
 static bool bus_filter_allows(CPUArchState *env, CPUIOTLBEntry *iotlbentry,
                               target_ulong addr, hwaddr paddr, unsigned size,
                               MMUAccessType access_type, int mmu_idx,
-                              uint64_t *value, uintptr_t retaddr)
+                              uint64_t *value, uintptr_t retaddr,
+                              CPUTLBHookState *state)
 {
     struct uc_struct *uc = env->uc;
     CPUState *cpu = env_cpu(env);
@@ -1620,9 +1634,14 @@ static bool bus_filter_allows(CPUArchState *env, CPUIOTLBEntry *iotlbentry,
     uc_mem_attrs bus = {iotlbentry->attrs.secure, !iotlbentry->attrs.user};
     uc_mem_type type =
         access_type == MMU_DATA_STORE ? UC_MEM_WRITE : UC_MEM_READ;
-    int verdict = uc->bus_access_cb(uc, paddr, size, bus, type, value,
-                                    uc->bus_filter_user);
+    int verdict;
 
+    state->retaddr = retaddr;
+    uc->bus_access_state = state;
+    verdict = uc->bus_access_cb(uc, paddr, size, bus, type, value,
+                                uc->bus_filter_user);
+    uc->bus_access_state = NULL;
+    tlb_hook_state_restore(env, state);
     if (verdict == UC_BUS_ALLOW) {
         return true;
     }
@@ -1637,12 +1656,13 @@ static bool bus_filter_allows(CPUArchState *env, CPUIOTLBEntry *iotlbentry,
 static QEMU_NOINLINE bool
 bus_filter_allows_store(CPUArchState *env, CPUIOTLBEntry *iotlbentry,
                         target_ulong addr, hwaddr paddr, unsigned size,
-                        int mmu_idx, uint64_t val, uintptr_t retaddr)
+                        int mmu_idx, uint64_t val, uintptr_t retaddr,
+                        CPUTLBHookState *state)
 {
     uint64_t value = val;
 
     return bus_filter_allows(env, iotlbentry, addr, paddr, size,
-                             MMU_DATA_STORE, mmu_idx, &value, retaddr);
+                             MMU_DATA_STORE, mmu_idx, &value, retaddr, state);
 }
 
 typedef struct BusFilterLoad {
@@ -1654,14 +1674,41 @@ static QEMU_NOINLINE BusFilterLoad
 bus_filter_allows_load(CPUArchState *env, CPUIOTLBEntry *iotlbentry,
                        target_ulong addr, hwaddr paddr, unsigned size,
                        MMUAccessType access_type, int mmu_idx,
-                       uintptr_t retaddr)
+                       uintptr_t retaddr, CPUTLBHookState *state)
 {
     BusFilterLoad result = {false, 0};
 
     result.allowed = bus_filter_allows(env, iotlbentry, addr, paddr, size,
                                        access_type, mmu_idx, &result.value,
-                                       retaddr);
+                                       retaddr, state);
     return result;
+}
+
+static QEMU_NOINLINE bool
+tlb_second_page_filtered(CPUArchState *env, uintptr_t mmu_idx,
+                         target_ulong addr, size_t size,
+                         MMUAccessType access_type, uintptr_t retaddr)
+{
+    struct uc_struct *uc = env->uc;
+    target_ulong page2 = (addr + size) & TARGET_PAGE_MASK;
+    size_t tlb_off = access_type == MMU_DATA_STORE
+                         ? offsetof(CPUTLBEntry, addr_write)
+                         : offsetof(CPUTLBEntry, addr_read);
+    uintptr_t index2 = tlb_index(env, mmu_idx, page2);
+    CPUTLBEntry *entry2 = tlb_entry(env, mmu_idx, page2);
+    target_ulong tlb_addr2 = tlb_read_ofs(entry2, tlb_off);
+
+    if (!tlb_hit_page(uc, tlb_addr2, page2)) {
+        if (!victim_tlb_hit(env, mmu_idx, index2, tlb_off, page2)) {
+            tlb_fill(env_cpu(env), page2, (addr + size) & ~TARGET_PAGE_MASK,
+                     access_type, mmu_idx, retaddr);
+            index2 = tlb_index(env, mmu_idx, page2);
+            entry2 = tlb_entry(env, mmu_idx, page2);
+        }
+        tlb_addr2 = tlb_read_ofs(entry2, tlb_off);
+    }
+    return (tlb_addr2 & TLB_WATCHPOINT) &&
+           env_tlb(env)->d[mmu_idx].iotlb[index2].bus_filter;
 }
 
 static inline uint64_t
@@ -1849,13 +1896,20 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
         tlb_hook_state_sync(env, retaddr, &hook_state);
         verdict = bus_filter_allows_load(
             env, &env_tlb(env)->d[mmu_idx].iotlb[index], addr, paddr, size,
-            access_type, mmu_idx, retaddr);
+            access_type, mmu_idx, retaddr, &hook_state);
         tlb_hook_state_restore(env, &hook_state);
         if (!verdict.allowed) {
             res = verdict.value & MAKE_64BIT_MASK(0, size * 8);
             goto _out;
         }
         filter_judged = true;
+    } else if (unlikely((addr & (size - 1)) != 0) && !filtered && !code_read &&
+               !uc->size_recur_mem && uc->bus_access_cb != NULL &&
+               (addr & ~TARGET_PAGE_MASK) + size > TARGET_PAGE_SIZE) {
+        filtered = tlb_second_page_filtered(env, mmu_idx, addr, size,
+                                            access_type, retaddr);
+        index = tlb_index(env, mmu_idx, addr);
+        entry = tlb_entry(env, mmu_idx, addr);
     }
     hooks_after = filtered && !filter_judged && !uc->size_recur_mem;
 
@@ -1998,7 +2052,7 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
             if (iotlbentry->bus_filter && !code_read && !filter_judged) {
                 BusFilterLoad verdict = bus_filter_allows_load(
                     env, iotlbentry, addr, paddr, size, access_type, mmu_idx,
-                    retaddr);
+                    retaddr, &hook_state);
 
                 if (!verdict.allowed) {
                     res = verdict.value & MAKE_64BIT_MASK(0, size * 8);
@@ -2440,12 +2494,20 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
     if (filtered && (addr & (size - 1)) == 0) {
         if (!bus_filter_allows_store(env, &env_tlb(env)->d[mmu_idx].iotlb[index],
                                      addr, paddr, size, mmu_idx, val,
-                                     retaddr)) {
+                                     retaddr, &hook_state)) {
             return;
         }
         filter_judged = true;
+    } else if (unlikely((addr & (size - 1)) != 0) && !filtered &&
+               !uc->size_recur_mem && uc->bus_access_cb != NULL &&
+               (addr & ~TARGET_PAGE_MASK) + size > TARGET_PAGE_SIZE) {
+        filtered = tlb_second_page_filtered(env, mmu_idx, addr, size,
+                                            MMU_DATA_STORE, retaddr);
+        index = tlb_index(env, mmu_idx, addr);
+        entry = tlb_entry(env, mmu_idx, addr);
     }
-    hooks_after = filtered && !filter_judged && !uc->size_recur_mem;
+    hooks_after = filtered && !filter_judged && !uc->size_recur_mem &&
+                  mr != NULL && (mr->perms & UC_PROT_WRITE);
 
     if (!uc->size_recur_mem && !hooks_after) { // disabling write callback if in recursive call
         // Unicorn: callback on memory write
@@ -2612,7 +2674,7 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
                                  iotlbentry->attrs, BP_MEM_WRITE, retaddr);
             if (iotlbentry->bus_filter && !filter_judged &&
                 !bus_filter_allows_store(env, iotlbentry, addr, paddr, size,
-                                         mmu_idx, val, retaddr)) {
+                                         mmu_idx, val, retaddr, &hook_state)) {
                 return;
             }
         }

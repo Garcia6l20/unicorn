@@ -182,6 +182,7 @@ module Common =
     let UC_CTL_TB_FLUSHES = 29
     let UC_CTL_UC_TB_BUDGET = 30
     let UC_CTL_UC_REQUEST_EXIT = 31
+    let UC_CTL_BUS_SYNC_PC = 32
 
     let UC_TB_EXIT_NONE = 0
     let UC_TB_EXIT_BUDGET = 1

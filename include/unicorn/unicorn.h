@@ -471,16 +471,22 @@ typedef unsigned (*uc_cb_bus_page_t)(uc_engine *uc, uint64_t page,
  * @brief Access callback of uc_ctl_bus_filter(), called for each data load
  * and store of a page whose verdict has UC_BUS_FILTER_DATA.
  * A load calls it before its UC_HOOK_MEM_READ and UC_HOOK_MEM_READ_PROT
- * hooks: a load it refuses runs neither, and UC_HOOK_MEM_READ_AFTER sees
- * the value the load returns. An unaligned load calls it for each aligned
- * part first and runs its UC_HOOK_MEM_READ hooks after, only when no part
- * was refused. A store calls it after its UC_HOOK_MEM_WRITE and
- * UC_HOOK_MEM_WRITE_PROT hooks. Every access calls it before the RAM
- * access. An unaligned load is split into aligned parts, an unaligned store
- * into bytes, and each part calls the callback. Never called for an
- * instruction fetch. Accesses the CPU makes on its own, such as M-profile
- * exception stacking, do not reach the TLB and are not filtered. The
- * callback must not call the engine.
+ * hooks, a store before its UC_HOOK_MEM_WRITE and UC_HOOK_MEM_WRITE_PROT
+ * hooks: an access it refuses runs none of them, and UC_HOOK_MEM_READ_AFTER
+ * sees the value the load returns. An unaligned access calls it for each
+ * part first and runs its UC_HOOK_MEM_READ or UC_HOOK_MEM_WRITE hooks after,
+ * only when no part was refused, also when only the page of its last bytes
+ * is filtered. An unaligned store to a region mapped without UC_PROT_WRITE
+ * runs its UC_HOOK_MEM_WRITE and UC_HOOK_MEM_WRITE_PROT hooks first, then
+ * calls it for each byte. Every access calls it before the RAM access. An
+ * unaligned load is split into aligned parts, an unaligned store into bytes,
+ * and each part calls the callback. Never called for an instruction fetch.
+ * Accesses the CPU makes on its own, such as M-profile exception stacking,
+ * do not reach the TLB and are not filtered. A load sees the CPU state of
+ * its instruction. A store sees the state of an earlier point of its
+ * translated block, the pc included, until the callback syncs it with
+ * UC_CTL_BUS_SYNC_PC. The callback must not call the engine other than
+ * uc_reg_read and UC_CTL_BUS_SYNC_PC.
  * @param uc The engine.
  * @param address Bus address of the access, or of the aligned part of an
  *        unaligned access: a word load at 0x4002 calls with 0x4000 and
@@ -979,6 +985,17 @@ typedef enum uc_control_type {
      * read.
      * Write: @args = () */
     UC_CTL_UC_REQUEST_EXIT,
+    /**
+     * Sync the CPU state, the pc included, to the instruction of the access
+     * the current uc_cb_bus_access_t judges, as before a memory hook. Only
+     * meaningful inside that callback, a request anywhere else does nothing.
+     * The engine restores the state the translated code expects after the
+     * callback, as after a memory hook, unless the callback stopped the
+     * emulation. The sync searches the translated block, so a host asks for
+     * it only when it reads the pc. UC_ARCH_ARM only, UC_ERR_ARG on other
+     * architectures and for a read.
+     * Write: @args = () */
+    UC_CTL_BUS_SYNC_PC,
 } uc_control_type;
 
 /**
@@ -1146,6 +1163,7 @@ See sample_ctl.c for a detailed example.
            (void *)(user))
 #define uc_ctl_arm_security(uc, enabled)                                       \
     uc_ctl(uc, UC_CTL_WRITE(UC_CTL_ARM_SECURITY, 1), (int)(enabled))
+#define uc_ctl_bus_sync_pc(uc) uc_ctl(uc, UC_CTL_WRITE(UC_CTL_BUS_SYNC_PC, 0))
 #define uc_ctl_bus_filter(uc, page_cb, access_cb, user)                        \
     uc_ctl(uc, UC_CTL_WRITE(UC_CTL_BUS_FILTER, 3),                             \
            (uc_cb_bus_page_t)(page_cb), (uc_cb_bus_access_t)(access_cb),       \

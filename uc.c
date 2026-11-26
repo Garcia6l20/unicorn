@@ -3647,6 +3647,16 @@ uc_err uc_ctl(uc_engine *uc, uc_control_type control, ...)
         break;
     }
 
+    case UC_CTL_BUS_SYNC_PC:
+        if (rw != UC_CTL_IO_WRITE || uc->arch != UC_ARCH_ARM) {
+            err = UC_ERR_ARG;
+            break;
+        }
+        if (uc->bus_access_sync != NULL) {
+            uc->bus_access_sync(uc);
+        }
+        break;
+
     default:
         err = UC_ERR_ARG;
         break;
