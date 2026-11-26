@@ -2720,7 +2720,7 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
         int i;
         uintptr_t index2;
         CPUTLBEntry *entry2;
-        target_ulong page2, tlb_addr2;
+        target_ulong page1, page2, tlb_addr2;
         size_t size2;
         int old_size;
 
@@ -2730,12 +2730,13 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
          * is already guaranteed to be filled, and that the second page
          * cannot evict the first.
          */
+        page1 = addr & TARGET_PAGE_MASK;
         page2 = (addr + size) & TARGET_PAGE_MASK;
         size2 = (addr + size) & ~TARGET_PAGE_MASK;
         index2 = tlb_index(env, mmu_idx, page2);
         entry2 = tlb_entry(env, mmu_idx, page2);
         tlb_addr2 = tlb_addr_write(entry2);
-        if (!tlb_hit_page(uc, tlb_addr2, page2)) {
+        if (page1 != page2 && !tlb_hit_page(uc, tlb_addr2, page2)) {
             if (!victim_tlb_hit(env, mmu_idx, index2, tlb_off, page2)) {
                 tlb_fill(env_cpu(env), page2, size2, MMU_DATA_STORE,
                          mmu_idx, retaddr);
@@ -2754,7 +2755,7 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
                                  env_tlb(env)->d[mmu_idx].iotlb[index].attrs,
                                  BP_MEM_WRITE, retaddr);
         }
-        if (unlikely(tlb_addr2 & TLB_WATCHPOINT)) {
+        if (unlikely(page1 != page2 && (tlb_addr2 & TLB_WATCHPOINT))) {
             cpu_check_watchpoint(env_cpu(env), page2, size2,
                                  env_tlb(env)->d[mmu_idx].iotlb[index2].attrs,
                                  BP_MEM_WRITE, retaddr);
