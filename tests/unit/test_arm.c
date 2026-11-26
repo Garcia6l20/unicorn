@@ -4620,6 +4620,184 @@ static void test_arm_cross_page_fault_before_hooks(void)
     test_arm_cross_page_fault_leg(false, false);
 }
 
+#define SUBPAGE_NS_BELOW 0
+#define SUBPAGE_NS_ABOVE 1
+#define SUBPAGE_SECURE_CODE 2
+
+typedef struct _SUBPAGE_CROSS {
+    bool store;
+    bool half;
+    uint32_t below;
+    bool hook;
+    bool exec;
+    bool filter;
+    int layout;
+} SUBPAGE_CROSS;
+
+typedef struct _SUBPAGE_RESULT {
+    int intno;
+    uint32_t pc;
+    uint32_t fault_address;
+    int hooks;
+    int accesses;
+    uint32_t low;
+    uint32_t high;
+    uint32_t r1;
+    uint32_t edge;
+} SUBPAGE_RESULT;
+
+static SUBPAGE_RESULT test_arm_subpage_cross_run(SUBPAGE_CROSS leg)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    V8M_RUN run;
+    BUS_LOG log;
+    BUS_HOOKS hooks = {0, 0, 0, false};
+    SUBPAGE_RESULT out;
+    char code_store[] = "\x10\x60";
+    char code_load[] = "\x11\x68";
+    char code_strh[] = "\x10\x80";
+    char code_ldrh[] = "\x11\x88";
+    const char *code = leg.store ? (leg.half ? code_strh : code_store)
+                                 : (leg.half ? code_ldrh : code_load);
+    uint32_t edge = leg.exec ? BUS_PAGE + 0x100 : BUS_DATA + 0x100;
+    uint32_t page = edge & ~0x3ffu;
+
+    uc = test_arm_v8m_ns_open(code, 2, &run);
+    if (!leg.exec) {
+        OK(uc_mem_map(uc, page, 0x400, UC_PROT_READ | UC_PROT_WRITE));
+    }
+    if (leg.layout == SUBPAGE_NS_BELOW) {
+        test_arm_v8m_sau_region(uc, 0, page, (edge - 0x20) | V8M_SAU_ENABLE);
+    } else {
+        test_arm_v8m_sau_region(uc, 0, edge, (edge + 0xe0) | V8M_SAU_ENABLE);
+    }
+    if (leg.layout == SUBPAGE_SECURE_CODE) {
+        test_arm_v8m_sau_region(uc, 7, 0, 0);
+        test_arm_v8m_reg(uc, UC_ARM_REG_SECURE, 1);
+    }
+    test_arm_bus_put(uc, edge - 4, BUS_WORD);
+    test_arm_bus_put(uc, edge, ~BUS_WORD);
+    if (leg.filter) {
+        test_arm_bus_log(&log, page, UC_BUS_FILTER_DATA, UC_BUS_ALLOW);
+        test_arm_bus_install(uc, &log);
+    } else {
+        memset(&log, 0, sizeof(log));
+    }
+    if (leg.hook) {
+        OK(uc_hook_add(uc, &hook,
+                       leg.store ? UC_HOOK_MEM_WRITE : UC_HOOK_MEM_READ,
+                       test_arm_bus_hook_access, &hooks, edge - 8, edge + 3));
+    }
+    test_arm_v8m_reg(uc, UC_ARM_REG_R0, 0x55aa66bb);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R1, 0xffffffff);
+    test_arm_v8m_reg(uc, UC_ARM_REG_R2, edge - leg.below);
+    test_arm_v8m_run(uc, &run, code_start, code_start + 2);
+    out.intno = run.intno;
+    out.pc = run.pc;
+    out.fault_address = run.intno == -1
+                            ? 0
+                            : test_arm_v8m_get(uc, UC_ARM_REG_FAULT_ADDRESS);
+    out.hooks = hooks.reads + hooks.writes;
+    out.accesses = log.accesses;
+    OK(uc_mem_read(uc, edge - 4, &out.low, 4));
+    OK(uc_mem_read(uc, edge, &out.high, 4));
+    out.r1 = test_arm_v8m_get(uc, UC_ARM_REG_R1);
+    out.edge = edge;
+    OK(uc_close(uc));
+    return out;
+}
+
+static void test_arm_subpage_cross_fault_leg(SUBPAGE_CROSS leg)
+{
+    SUBPAGE_RESULT out = test_arm_subpage_cross_run(leg);
+
+    TEST_CHECK(out.intno == V8M_EXCP_DATA_ABORT);
+    TEST_CHECK(out.pc == code_start);
+    TEST_CHECK(out.fault_address == out.edge);
+    TEST_CHECK(out.hooks == 0);
+    TEST_CHECK(out.accesses == 0);
+    TEST_CHECK(out.low == BUS_WORD);
+    TEST_CHECK(out.high == ~BUS_WORD);
+    TEST_CHECK(out.r1 == 0xffffffff);
+    TEST_MSG("%s%s at edge - %u, hook %d exec %d filter %d: intno %d pc 0x%x "
+             "fault 0x%x hooks %d accesses %d low 0x%x high 0x%x r1 0x%x",
+             leg.store ? "store" : "load", leg.half ? " halfword" : "",
+             leg.below, leg.hook, leg.exec, leg.filter, out.intno, out.pc,
+             out.fault_address, out.hooks, out.accesses, out.low, out.high,
+             out.r1);
+}
+
+static void test_arm_subpage_cross_fault_before_hooks(void)
+{
+    static const struct {
+        bool half;
+        uint32_t below;
+    } shapes[] = {{false, 2}, {false, 1}, {false, 3}, {true, 1}};
+    SUBPAGE_RESULT out;
+    int store, shape, hook, exec, filter;
+
+    for (store = 0; store < 2; store++) {
+        for (shape = 0; shape < 4; shape++) {
+            for (hook = 0; hook < 2; hook++) {
+                for (exec = 0; exec < 2; exec++) {
+                    for (filter = 0; filter < 2; filter++) {
+                        SUBPAGE_CROSS leg = {store, shapes[shape].half,
+                                             shapes[shape].below, hook,
+                                             exec, filter, SUBPAGE_NS_BELOW};
+
+                        test_arm_subpage_cross_fault_leg(leg);
+                    }
+                }
+            }
+        }
+    }
+
+    for (store = 0; store < 2; store++) {
+        SUBPAGE_CROSS secure = {store, false, 2, true, true, false,
+                                SUBPAGE_SECURE_CODE};
+        SUBPAGE_CROSS head = {store, false, 2, true, true, false,
+                              SUBPAGE_NS_ABOVE};
+        SUBPAGE_CROSS inside = {store, false, 7, true, true, false,
+                                SUBPAGE_NS_BELOW};
+
+        out = test_arm_subpage_cross_run(secure);
+        TEST_CHECK(out.intno == -1);
+        TEST_CHECK(out.hooks == 1);
+        if (store) {
+            TEST_CHECK(out.low == 0x66bb3344);
+            TEST_CHECK(out.high == 0xeedd55aa);
+        } else {
+            TEST_CHECK(out.r1 == 0xccbb1122);
+        }
+        TEST_MSG("secure %s: intno %d hooks %d low 0x%x high 0x%x r1 0x%x",
+                 store ? "store" : "load", out.intno, out.hooks, out.low,
+                 out.high, out.r1);
+
+        out = test_arm_subpage_cross_run(head);
+        TEST_CHECK(out.intno == V8M_EXCP_DATA_ABORT);
+        TEST_CHECK(out.fault_address == out.edge - 2);
+        TEST_CHECK(out.hooks == 0);
+        TEST_CHECK(out.low == BUS_WORD);
+        TEST_CHECK(out.high == ~BUS_WORD);
+        TEST_MSG("secure head %s: intno %d fault 0x%x hooks %d",
+                 store ? "store" : "load", out.intno, out.fault_address,
+                 out.hooks);
+
+        out = test_arm_subpage_cross_run(inside);
+        TEST_CHECK(out.intno == -1);
+        TEST_CHECK(out.hooks == 1);
+        if (store) {
+            TEST_CHECK(out.low == 0x11223355);
+        } else {
+            TEST_CHECK(out.r1 == 0x44000000);
+        }
+        TEST_MSG("inside %s: intno %d hooks %d low 0x%x r1 0x%x",
+                 store ? "store" : "load", out.intno, out.hooks, out.low,
+                 out.r1);
+    }
+}
+
 typedef struct _BUS_PC {
     int verdict;
     bool sync;
@@ -7152,6 +7330,8 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
               test_arm_bus_filter_cross_page_hook_order},
              {"test_arm_cross_page_fault_before_hooks",
               test_arm_cross_page_fault_before_hooks},
+             {"test_arm_subpage_cross_fault_before_hooks",
+              test_arm_subpage_cross_fault_before_hooks},
              {"test_arm_bus_filter_sync_pc", test_arm_bus_filter_sync_pc},
              {"test_arm_bus_filter_sync_pc_it_block",
               test_arm_bus_filter_sync_pc_it_block},

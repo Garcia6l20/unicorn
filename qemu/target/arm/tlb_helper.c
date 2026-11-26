@@ -185,6 +185,50 @@ static uint32_t arm_fetch_window_end(struct uc_struct *uc, vaddr address,
     return end;
 }
 
+static bool arm_byte_faults(CPUARMState *env, vaddr at,
+                            MMUAccessType access_type, ARMMMUIdx idx,
+                            ARMMMUFaultInfo *fi)
+{
+    hwaddr phys;
+    MemTxAttrs attrs = { 0 };
+    int prot;
+    target_ulong page_size;
+
+    *fi = (ARMMMUFaultInfo){ 0 };
+    return get_phys_addr(env, at, access_type, idx, &phys, &attrs, &prot,
+                         &page_size, fi, NULL);
+}
+
+static QEMU_NOINLINE bool arm_tail_faults(CPUState *cs, vaddr address,
+                                          int size, MMUAccessType access_type,
+                                          int mmu_idx, bool probe,
+                                          uintptr_t retaddr)
+{
+    ARMCPU *cpu = ARM_CPU(cs);
+    CPUARMState *env = &cpu->env;
+    ARMMMUIdx idx = core_to_arm_mmu_idx(env, mmu_idx);
+    vaddr last = address + size - 1;
+    ARMMMUFaultInfo fi;
+    vaddr at;
+
+    if (!arm_byte_faults(env, last, access_type, idx, &fi)) {
+        return false;
+    }
+    for (at = address + 1; at < last; at++) {
+        ARMMMUFaultInfo first;
+
+        if (arm_byte_faults(env, at, access_type, idx, &first)) {
+            fi = first;
+            break;
+        }
+    }
+    if (!probe) {
+        cpu_restore_state(cs, retaddr, true);
+        arm_deliver_fault(cpu, at, access_type, mmu_idx, &fi);
+    }
+    return true;
+}
+
 QEMU_HOT bool arm_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
                       MMUAccessType access_type, int mmu_idx,
                       bool probe, uintptr_t retaddr)
@@ -234,6 +278,11 @@ QEMU_HOT bool arm_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
         if (page_size >= TARGET_PAGE_SIZE) {
             phys_addr &= TARGET_PAGE_MASK;
             address &= TARGET_PAGE_MASK;
+        } else if (unlikely((address & (size - 1)) != 0) && size > 1 &&
+                   access_type != MMU_INST_FETCH &&
+                   arm_tail_faults(cs, address, size, access_type, mmu_idx,
+                                   probe, retaddr)) {
+            return false;
         }
         uc->bus_fill_filter = (verdict & UC_BUS_FILTER_DATA) != 0;
         uc->bus_fill_fetch_each = (verdict & UC_BUS_FETCH_EACH) != 0;

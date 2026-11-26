@@ -478,7 +478,10 @@ typedef unsigned (*uc_cb_bus_page_t)(uc_engine *uc, uint64_t page,
  * only when no part was refused, also when only the page of its last bytes
  * is filtered. An unaligned access that crosses a page fills the TLB entry of
  * its second page before any of its hooks, with or without a bus filter, so
- * a fault the second page's translation raises runs none of them. An
+ * a fault the second page's translation raises runs none of them. On an
+ * M-profile core, an unaligned load or store whose bytes have different SAU
+ * or MPU attributes inside one page takes the fault of its first faulting
+ * byte before any of its hooks and before any of its bytes is accessed. An
  * unaligned store to a region mapped without UC_PROT_WRITE
  * runs its UC_HOOK_MEM_WRITE and UC_HOOK_MEM_WRITE_PROT hooks first, then
  * calls it for each byte. Every access calls it before the RAM access. An
